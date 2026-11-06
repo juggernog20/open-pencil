@@ -1,0 +1,41 @@
+# Gives every state of the patched branch a fixed tag that projects can pin. FORK.md explains why.
+name: Fork tag
+
+on:
+  push:
+    branches: [patched]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Tag the patched branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Create the next -jn tag
+        run: |
+          set -euo pipefail
+          git fetch --quiet --force https://github.com/open-pencil/open-pencil.git 'refs/tags/*:refs/tags/*'
+          if git tag --points-at HEAD | grep -q -- '-jn\.'; then
+            echo "HEAD already has a fork tag: $(git tag --points-at HEAD | grep -- '-jn\.')"
+            exit 0
+          fi
+          base=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-jn.*' HEAD)
+          last=$(git tag -l "$base-jn.*" | sed "s/^$base-jn\.//" | sort -n | tail -n 1)
+          tag="$base-jn.$(( ${last:-0} + 1 ))"
+          git config user.name 'fork-tag'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$tag" -m "Fork build $tag: upstream $base plus the changes in FORK.md"
+          git push origin "refs/tags/$tag"
+          echo "Created $tag" >> "$GITHUB_STEP_SUMMARY"

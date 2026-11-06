@@ -1,0 +1,80 @@
+# Checks a pull request to the patched branch with upstream's own tests. FORK.md explains why.
+name: Fork check
+
+on:
+  pull_request:
+    branches: [patched]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # The same groups upstream's ci.yml runs.
+      matrix:
+        group: [app, cli, core, dom, fig, mcp, render, scene-graph, vue]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-bun
+        with:
+          lfs: 'true'
+          lfs-include: tests/fixtures/gold-preview.fig,tests/fixtures/circle-text.fig,tests/fixtures/slots.fig,tests/fixtures/variable-override-precedence.fig,tests/fixtures/fonts/*
+
+      - name: Build the core package the tests share
+        run: bun --filter @open-pencil/core build
+
+      - name: Run the ${{ matrix.group }} unit tests
+        run: bun tools/dev/unit-tests/src/run.ts "${{ matrix.group }}"
+
+  cli-smoke:
+    name: CLI reads .pen files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-bun
+
+      # rustup installs the toolchain that packages/html-engine/rust-toolchain.toml pins.
+      - name: Build the packages
+        run: bun run build:packages
+
+      - name: Inspect, export and convert every .pen fixture
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/smoke"
+          mkdir -p "$out"
+          op() { node packages/cli/bin/openpencil.js "$@"; }
+          for file in tests/fixtures/*.pen; do
+            name=$(basename "$file" .pen)
+            echo "::group::$name"
+            op info "$file"
+            op export "$file" -o "$out/$name.png"
+            op convert "$file" "$out/$name.fig"
+            test -s "$out/$name.png"
+            echo "::endgroup::"
+          done
+
+      - name: Start the MCP server
+        run: |
+          set -euo pipefail
+          # One initialize request on stdin. The server must answer it.
+          reply=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fork-check","version":"1"}}}' |
+            timeout 30 node packages/mcp/dist/stdio.mjs | head -n 1)
+          echo "$reply"
+          echo "$reply" | jq -e '.result.serverInfo' >/dev/null
