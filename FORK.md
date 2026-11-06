@@ -15,7 +15,7 @@ The fork carries as few changes as possible. Every change we carry costs work at
 
 | Ref | What it is |
 | --- | --- |
-| `main` | An exact mirror of upstream `main`. Never commit to it. The sync job updates it. |
+| `master` | An exact mirror of upstream `master`. Never commit to it. The sync job updates it. |
 | `patched` | The default branch. The latest upstream release we use, plus our carried changes. |
 | `sync/<tag>` | A pull request branch that brings one upstream release into `patched`. |
 | `<upstream tag>-jn.<n>` | A fixed build to pin, for example `v0.17.0-beta.2-jn.1`. Every push to `patched` makes a new one. |
@@ -26,7 +26,7 @@ Projects pin a `-jn.<n>` tag. They never follow a branch. A project moves to a n
 
 `.github/workflows/fork-sync.yml` runs every day at 05:17 UTC. You can also start it by hand from the Actions tab.
 
-1. It copies upstream `main` to our `main`.
+1. It copies upstream `master` to our `master`.
 2. It finds the newest upstream release. The repository variable `TRACK_PRERELEASES` controls this. With `true`, beta releases count. With `false`, only full releases count.
 3. If `patched` already contains that release, it stops.
 4. If not, it merges the release tag into a `sync/<tag>` branch and opens a pull request to `patched`.

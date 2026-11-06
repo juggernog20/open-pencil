@@ -50,13 +50,13 @@ jobs:
           git config user.name 'fork-sync'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add upstream "https://github.com/$UPSTREAM.git"
-          git fetch --quiet upstream main
+          git fetch --quiet upstream master
           git fetch --quiet --force upstream 'refs/tags/*:refs/tags/*'
 
-      - name: Mirror upstream main
-        # No --force. If our main has diverged from upstream, someone committed to it by mistake,
+      - name: Mirror upstream master
+        # No --force. If our master has diverged from upstream, someone committed to it by mistake,
         # and the job stops so a person can look.
-        run: git push origin refs/remotes/upstream/main:refs/heads/main
+        run: git push origin refs/remotes/upstream/master:refs/heads/master
 
       - name: Choose the upstream release
         id: release
