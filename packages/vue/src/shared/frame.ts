@@ -117,7 +117,10 @@ export async function nextFrame(options: NextFrameOptions = {}): Promise<void> {
  * Waits for a frame drawn while the page is shown, by which the canvas has reported its size:
  * a hidden tab reports none. Placing the view, such as fitting a page, waits for this so it
  * uses the canvas's own size, while work before it goes on in a background tab. A tab hidden
- * before its frame waits to be shown again.
+ * before its frame waits to be shown again. This wait has no time limit, unlike `nextFrame`: a
+ * page that says it is shown but draws no frame, as WebKitGTK does for a covered window, waits
+ * until the window is shown, since the view needs the canvas's real size. Opening a file for
+ * an agent replies before this wait, through `onReady`.
  */
 export async function nextShownFrame(options: NextShownFrameOptions = {}): Promise<void> {
   const visibility = options.visibility ?? documentVisibility
