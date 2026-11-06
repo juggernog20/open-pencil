@@ -346,7 +346,8 @@ async function showImportedGraph(
   store: EditorStore,
   graph: SceneGraph,
   prepare?: () => void | Promise<void>,
-  load?: DocumentLoadSession
+  load?: DocumentLoadSession,
+  onReady?: () => void
 ): Promise<void> {
   load?.update({ phase: 'materializing', detail: store.state.documentName })
   await applyImportedDocument(store, graph, load)
@@ -363,6 +364,8 @@ async function showImportedGraph(
   await store.switchPage(pageId, {
     preparation: load,
     beforePresentation: async () => {
+      // The page is committed: tools can work on it while the canvas has yet to show it.
+      onReady?.()
       if (remembered) {
         await nextShownFrame({ signal: load?.signal })
         store.centerOn(remembered.center.x, remembered.center.y, remembered.zoom)
@@ -543,10 +546,21 @@ export async function openStorageDocumentInNewTab(
   return store
 }
 
+export interface OpenFileOptions {
+  /**
+   * Runs once the document's first page is in place, so tools can work on it, before the
+   * canvas shows it. A window that is not shown draws no frames, so the open itself settles
+   * only once someone shows it. A file already open or already opening, and an HTML import,
+   * never call this.
+   */
+  onReady?: (store: EditorStore) => void
+}
+
 export async function openFileInNewTab(
   file: File,
   handle?: FileSystemFileHandle,
-  path?: string
+  path?: string,
+  options: OpenFileOptions = {}
 ): Promise<EditorStore> {
   const identity: DocumentSourceIdentity = {
     handle: handle ?? null,
@@ -633,7 +647,8 @@ export async function openFileInNewTab(
         store.setDocumentSource(file.name, sourceFormat, handle, path)
         if (isFig && path) watchOpenedFigCover(path, store)
       },
-      load
+      load,
+      () => options.onReady?.(store)
     )
     if (isFig && path) {
       void cacheOpenedFigCover(path, store).catch((error) => {

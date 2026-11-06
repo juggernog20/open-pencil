@@ -9,6 +9,7 @@ import { resolveBrowserFileURL } from '@/app/document/io/browser'
 import type { DocumentSourceIdentity } from '@/app/document/io/types'
 import { getRecoveryStore, resetRecoveryStoreForTests } from '@/app/document/recovery'
 import { createMemoryRecoveryStore } from '@/app/document/recovery/memory'
+import type { EditorStore } from '@/app/editor/active-store'
 import {
   closeTab,
   createHomeTab,
@@ -357,5 +358,27 @@ describe('openFileInNewTab deduplication', () => {
 
     expect(tabCount()).toBe(initialCount + 1)
     expect(figModule.readFigFile).toHaveBeenCalledTimes(2)
+  })
+
+  test('reports a file ready before its canvas shows it, then finishes the open', async () => {
+    const ready = Promise.withResolvers<EditorStore>()
+    let settled = false
+    const opening = openFileInNewTab(new File([], 'unshown.fig'), undefined, '/tmp/unshown.fig', {
+      onReady: ready.resolve
+    })
+    void opening.then(() => {
+      settled = true
+      return undefined
+    })
+
+    const store = await ready.promise
+    // Nothing has drawn the page yet, so the open is still waiting for its first frame.
+    expect(settled).toBe(false)
+    expect(store.state.preparation?.phase).toBe('preparing-render')
+    expect(store.getSourceIdentity().path).toBe('/tmp/unshown.fig')
+    expect(getActiveStore()).toBe(store)
+
+    await settleFileOpen(opening)
+    expect(settled).toBe(true)
   })
 })
