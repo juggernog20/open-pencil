@@ -6,12 +6,24 @@ const documentVisibility = useDocumentVisibility()
 
 type Visibility = Readonly<Ref<DocumentVisibilityState>>
 
-export interface NextFrameOptions {
+/**
+ * How long `nextFrame` waits for a frame on a page that says it is shown. WebKitGTK reports a
+ * window under other windows as visible yet draws it no frames, so a wait for one would last
+ * until someone brings the window forward.
+ */
+const FRAME_WAIT_LIMIT_MS = 250
+
+interface FrameWaitOptions {
   /** Whether the browser shows the page; the document's own by default. */
   visibility?: Visibility
 }
 
-export interface NextShownFrameOptions extends NextFrameOptions {
+export interface NextFrameOptions extends FrameWaitOptions {
+  /** How long to wait for the frame before going on without it. */
+  limitMs?: number
+}
+
+export interface NextShownFrameOptions extends FrameWaitOptions {
   /** Stops waiting, rejecting with the signal's reason, when the work it is for is cancelled. */
   signal?: AbortSignal
 }
@@ -20,14 +32,22 @@ function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError')
 }
 
-/** True once a frame runs while the page is shown; false if the page is hidden first. */
-function frameWhileShown(visibility: Visibility, signal?: AbortSignal): Promise<boolean> {
+/**
+ * True once a frame runs while the page is shown; false if the page is hidden first, or if
+ * `limitMs` passes without a frame.
+ */
+function frameWhileShown(
+  visibility: Visibility,
+  signal?: AbortSignal,
+  limitMs?: number
+): Promise<boolean> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortReason(signal))
       return
     }
     let frame = 0
+    let limit: ReturnType<typeof setTimeout> | undefined
     const stop = watch(visibility, (state) => {
       if (state === 'hidden') finish(false)
     })
@@ -37,6 +57,7 @@ function frameWhileShown(visibility: Visibility, signal?: AbortSignal): Promise<
     }
     function cleanup() {
       cancelAnimationFrame(frame)
+      clearTimeout(limit)
       stop()
       signal?.removeEventListener('abort', abort)
     }
@@ -45,6 +66,8 @@ function frameWhileShown(visibility: Visibility, signal?: AbortSignal): Promise<
       resolve(drawn)
     }
     signal?.addEventListener('abort', abort, { once: true })
+    // The limit starts first, so a frame callback that runs at once also clears it.
+    if (limitMs !== undefined) limit = setTimeout(() => finish(false), limitMs)
     frame = requestAnimationFrame(() => finish(true))
   })
 }
@@ -81,12 +104,13 @@ function shown(visibility: Visibility, signal?: AbortSignal): Promise<undefined>
  * Lets the page lay out and draw before going on: resolves on the next animation frame. A
  * hidden tab draws no frames and shows nothing, so work started in a background tab, such as
  * opening a file or starting the canvas, goes on at once rather than waiting until the tab is
- * shown again, and a tab hidden while waiting stops waiting.
+ * shown again, and a tab hidden while waiting stops waiting. A page that says it is shown but
+ * draws no frame within `limitMs` goes on as a hidden one does.
  */
 export async function nextFrame(options: NextFrameOptions = {}): Promise<void> {
   const visibility = options.visibility ?? documentVisibility
   if (visibility.value === 'hidden') return
-  await frameWhileShown(visibility)
+  await frameWhileShown(visibility, undefined, options.limitMs ?? FRAME_WAIT_LIMIT_MS)
 }
 
 /**

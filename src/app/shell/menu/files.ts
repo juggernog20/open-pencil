@@ -16,7 +16,7 @@ import {
 import { notificationMessages } from '@/app/i18n/notifications'
 import { rememberRecentFile } from '@/app/recent-files'
 import { toast } from '@/app/shell/ui'
-import { getTabsSnapshot, openFileInNewTab, switchTab } from '@/app/tabs'
+import { getTabsSnapshot, openFileInNewTab, switchTab, type OpenFileOptions } from '@/app/tabs'
 import { findTabByFileIdentity } from '@/app/tabs/open/identity'
 import { isTauri } from '@/app/tauri/env'
 import { IS_BROWSER } from '@/constants'
@@ -70,7 +70,11 @@ function fileNameFromURL(url: URL): string {
 }
 
 /** Fetches a document over HTTP and opens it in a new tab. Browser builds only. */
-export async function openBrowserFileFromURL(url: URL, init?: RequestInit): Promise<void> {
+export async function openBrowserFileFromURL(
+  url: URL,
+  init?: RequestInit,
+  options?: OpenFileOptions
+): Promise<void> {
   // The cap needs a controller of its own, so a caller's signal is combined with it
   // rather than replaced: dropping it would leave the caller unable to cancel.
   const controller = new AbortController()
@@ -89,7 +93,7 @@ export async function openBrowserFileFromURL(url: URL, init?: RequestInit): Prom
   const name = fileNameFromURL(url)
   assertSupportedDesignFile(name)
   const file = new File([bytes], name, { type: 'application/octet-stream' })
-  await openFileInNewTab(file, undefined, url.href)
+  await openFileInNewTab(file, undefined, url.href, options)
 }
 
 function isSupportedDesignFile(fileName: string): boolean {
@@ -138,10 +142,10 @@ export async function chooseTauriOpenPaths(): Promise<string[]> {
   return typeof paths === 'string' ? [paths] : paths
 }
 
-export async function openFileFromPath(path: string) {
+export async function openFileFromPath(path: string, options?: OpenFileOptions) {
   if (!isTauri()) return
   const file = await readTauriDesignFile(path)
-  const store = await openFileInNewTab(file, undefined, path)
+  const store = await openFileInNewTab(file, undefined, path, options)
   rememberRecentFile(path, store.state.documentKind)
 }
 
