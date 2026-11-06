@@ -60,6 +60,8 @@ git log --no-merges --oneline "$(git describe --tags --abbrev=0 --match 'v*' --e
 | Change | Why we carry it | Upstream pull request |
 | --- | --- | --- |
 | `FORK.md` and the `fork-*` workflows | They run this fork. Upstream does not need them. | Not offered |
+| Backport of upstream #1794, which loads only the sets a page uses and keeps opening files in hidden tabs | The `open_file` fix below builds on it. Remove it at the first upstream release that has it. | [#1794](https://github.com/open-pencil/open-pencil/pull/1794), merged after v0.17.0-beta.2 |
+| `open_file` answers once the first page is in place, and `nextFrame` stops waiting after 250 ms without a frame | On Linux, WebKitGTK says a window behind other windows is visible but draws no frames for it. `open_file` then waited for a frame until the MCP call timed out. The same fix is on branch `fix/open-file-reply-when-ready`, based on upstream `master`. | Not offered yet |
 
 ## Build from source
 
@@ -69,5 +71,8 @@ The build needs bun at the version in `package.json` (`packageManager`), and Rus
 bun install --frozen-lockfile
 bun run build:packages                # CLI and MCP server
 node packages/cli/bin/openpencil.js --help
-bun tauri build --no-bundle           # desktop app, needs WebKitGTK 2.40 or later on Linux
+bunx vite build                       # web app for the desktop shell
+bun tauri build --no-bundle --config '{"build":{"beforeBuildCommand":""}}'
 ```
+
+The desktop build needs WebKitGTK 2.40 or later on Linux. The empty `beforeBuildCommand` skips upstream's lint step, which fails at v0.17.0-beta.2. On some Linux laptops with two GPUs, the app stops at the splash screen. Start it with `WEBKIT_DISABLE_DMABUF_RENDERER=1` to fix that.
