@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'bun:test'
 import * as figModule from '@open-pencil/core/io/formats/fig'
 import * as layoutModule from '@open-pencil/core/layout'
 import { SceneGraph } from '@open-pencil/scene-graph'
+import { createDeferred } from '@open-pencil/std/async'
 import { expectDefined } from '@open-pencil/test-support/assert'
 
 import { resolveBrowserFileURL } from '@/app/document/io/browser'
@@ -433,5 +434,28 @@ describe('openFileInNewTab deduplication', () => {
 
     expect(tabCount()).toBe(initialCount + 1)
     expect(figModule.readFigFile).toHaveBeenCalledTimes(2)
+  })
+
+  test('reports a file ready before its canvas shows it, then finishes the open', async () => {
+    const ready = createDeferred<Tab['store']>()
+    let settled = false
+    const opening = openFileInNewTab(new File([], 'unshown.fig'), {
+      path: '/tmp/unshown.fig',
+      onReady: ready.resolve
+    })
+    void opening.then(() => {
+      settled = true
+      return undefined
+    })
+
+    const store = await ready.promise
+    // Nothing has drawn the page yet, so the open is still waiting for its first frame.
+    expect(settled).toBe(false)
+    expect(store.state.preparation?.phase).toBe('preparing-render')
+    expect(store.getSourceIdentity().path).toBe('/tmp/unshown.fig')
+    expect(getActiveStore()).toBe(store)
+
+    await settleFileOpen(opening)
+    expect(settled).toBe(true)
   })
 })

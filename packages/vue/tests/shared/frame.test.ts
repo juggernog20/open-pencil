@@ -77,6 +77,18 @@ describe('waiting for the next frame', () => {
     expect(shown.pending.size).toBe(0)
   })
 
+  // WebKitGTK reports a window under other windows as visible, yet draws it no frames.
+  test('goes on without a frame on a page that says it is shown but draws none', async () => {
+    const covered = page('visible')
+    const frame = nextFrame({ visibility: covered.visibility, limitMs: 5 })
+    expect(await settled(frame)).toBe(false)
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20)
+    })
+    expect(await settled(frame)).toBe(true)
+    expect(covered.pending.size).toBe(0)
+  })
+
   // Placing the view needs the canvas's size, which a hidden tab never reports.
   test('a shown frame waits for the tab to be shown, then for its frame', async () => {
     const hidden = page('hidden')

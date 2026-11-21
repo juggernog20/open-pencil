@@ -83,13 +83,15 @@ const documentReplaced = createEventHook<EditorStore>()
 export const onTabDocumentReplaced = documentReplaced.on
 /**
  * Puts an imported graph into a tab's store and shows it where it was left, or its first page
- * fitted; `prepare` runs once the document is in, before the page is shown.
+ * fitted; `prepare` runs once the document is in, before the page is shown. `onReady` runs once
+ * that page is committed, before the canvas shows it.
  */
 export async function showImportedGraph(
   store: EditorStore,
   graph: SceneGraph,
   prepare?: () => void | Promise<void>,
-  load?: DocumentLoadSession
+  load?: DocumentLoadSession,
+  onReady?: () => void
 ): Promise<void> {
   load?.update({ phase: 'materializing', detail: store.state.documentName })
   // The page this tab will show is prepared by switchPage below. Preparing the first page in a
@@ -109,6 +111,8 @@ export async function showImportedGraph(
   await store.switchPage(pageId, {
     preparation: load,
     beforePresentation: async () => {
+      // The page is committed: tools can work on it while the canvas has yet to show it.
+      onReady?.()
       if (remembered) {
         await nextShownFrame({ signal: load?.signal })
         store.centerOn(remembered.center.x, remembered.center.y, remembered.zoom)
