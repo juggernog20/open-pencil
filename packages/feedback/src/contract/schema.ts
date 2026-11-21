@@ -8,7 +8,19 @@ export const PLATFORMS = ['macos', 'windows', 'linux', 'ios', 'android', 'unknow
 export const ARCHITECTURES = ['arm64', 'x64', 'unknown'] as const
 export const APP_KINDS = ['desktop', 'web'] as const
 export const BROWSERS = ['chrome', 'edge', 'opera', 'firefox', 'safari', 'unknown'] as const
-export const LOCALES = ['en', 'de', 'es', 'fr', 'it', 'ja', 'pl', 'ru', 'zh-CN'] as const
+export const LOCALES = [
+  'en',
+  'ar',
+  'de',
+  'es',
+  'fr',
+  'it',
+  'ja',
+  'pl',
+  'pt-BR',
+  'ru',
+  'zh-CN'
+] as const
 export const DOCUMENT_FORMATS = [
   'fig',
   'pen',
@@ -40,6 +52,7 @@ export const AI_PROVIDERS = [
   'acp:claude-code',
   'acp:codex',
   'acp:gemini-cli',
+  'acp:antigravity',
   'acp:cursor',
   'acp:grok-build'
 ] as const
@@ -56,11 +69,61 @@ export type AIProvider = (typeof AI_PROVIDERS)[number]
 export const USAGE_STATS_ANSWERS = ['unset', 'granted', 'denied'] as const
 export type UsageStatsAnswer = (typeof USAGE_STATS_ANSWERS)[number]
 
+/**
+ * How many days an install has pinged, the current ping included, in steps that double: never
+ * the exact number, so no count follows one install. An install moves through every step in
+ * order, which is what lets the server set aside a restored copy that replays the same step.
+ */
+export const PING_STEPS = ['1', '2', '3-4', '5-8', '9-16', '17-32', '33-64', '65+'] as const
+export type PingStep = (typeof PING_STEPS)[number]
+
+/** The first day of each step, in `PING_STEPS` order. */
+export const PING_STEP_STARTS = [1, 2, 3, 5, 9, 17, 33, 65] as const
+
+/** The step of an install's `day`-th day with a ping, and whether that day moved it into the step. */
+export function pingStepOf(day: number): { pingDays: PingStep; enteredStep: boolean } {
+  const index = PING_STEP_STARTS.findLastIndex((start) => start <= day)
+  const step = Math.max(index, 0)
+  return { pingDays: PING_STEPS[step], enteredStep: PING_STEP_STARTS[step] === day }
+}
+
 /** Where a person agreed to share usage stats. */
 export const CONSENT_SOURCES = ['welcome', 'prompt', 'settings'] as const
 export type ConsentSource = (typeof CONSENT_SOURCES)[number]
 
 /** Where a person chose to donate: the question the app asks, the File menu, or Settings. */
+/**
+ * Where the app can show a campaign. Each is drawn by the app, so a new one needs a release;
+ * campaigns for a placement an install does not know are ignored there, which lets the server
+ * aim at placements newer builds have.
+ */
+export const CAMPAIGN_PLACEMENTS = [
+  /** The corner prompt the donation question uses: one at a time, never twice a launch. */
+  'prompt',
+  /** A note at the top of Settings › Cloud, for an install that is signed out. */
+  'settings-cloud',
+  /** A note in Settings › Models, beside bringing a provider key. */
+  'settings-models',
+  /** A note in Settings › Integrations, beside web search. */
+  'settings-integrations',
+  /** A note in Settings › Usage. */
+  'settings-usage',
+  /** A note in the share dialog of a document that is not in Cloud. */
+  'share'
+] as const
+export type CampaignPlacement = (typeof CAMPAIGN_PLACEMENTS)[number]
+
+/**
+ * Campaigns the app ships with, by ID and kind, such as the donation ask official builds make
+ * when the server sends nothing. Ingest counts their events as it does the ones it serves, and a
+ * served campaign with the same ID replaces the app's own.
+ */
+export const BUILT_IN_CAMPAIGNS = { donation: 'donation' } as const
+export type BuiltInCampaignId = keyof typeof BUILT_IN_CAMPAIGNS
+
+/** A campaign's ID, which the server gives it; ingest forwards only the ones it still serves. */
+export const campaignIdSchema = v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,62}$/))
+
 export const DONATION_SOURCES = ['prompt', 'menu', 'settings'] as const
 export type DonationSource = (typeof DONATION_SOURCES)[number]
 
@@ -82,14 +145,26 @@ const buildEntries = {
 export const buildSchema = v.strictObject(buildEntries)
 export type Build = v.InferOutput<typeof buildSchema>
 
-/**
- * The daily anonymous ping: no identifier, only which build is running and how the install
- * answered the usage stats question, which counts the installs that declined.
- */
-export const pingSchema = v.strictObject({
+/** The ping's fields, each described for the privacy page. */
+export const pingEntries = {
   ...buildEntries,
-  usageStats: v.picklist(USAGE_STATS_ANSWERS)
-})
+  usageStats: v.picklist(USAGE_STATS_ANSWERS),
+  pingDays: v.optional(v.picklist(PING_STEPS)),
+  enteredStep: v.optional(v.boolean())
+}
+
+/**
+ * The daily anonymous ping: no identifier, only which build is running, how the install answered
+ * the usage stats question, which counts the installs that declined, and the step of its days
+ * with a ping. Versions before the steps send none.
+ */
+export const pingSchema = v.pipe(
+  v.strictObject(pingEntries),
+  v.check(
+    (ping) => (ping.pingDays === undefined) === (ping.enteredStep === undefined),
+    'A ping sends its step and whether it entered the step together, or neither.'
+  )
+)
 export type Ping = v.InferOutput<typeof pingSchema>
 
 const timestampSchema = v.pipe(v.string(), v.isoTimestamp())
@@ -128,7 +203,15 @@ export const usageEventSchema = v.variant('name', [
     name: v.literal('donate_clicked'),
     timestamp: timestampSchema,
     source: v.picklist(DONATION_SOURCES)
-  })
+  }),
+  ...(['campaign_shown', 'campaign_dismissed', 'campaign_acted'] as const).map((name) =>
+    v.strictObject({
+      name: v.literal(name),
+      timestamp: timestampSchema,
+      campaign: campaignIdSchema,
+      placement: v.picklist(CAMPAIGN_PLACEMENTS)
+    })
+  )
 ])
 export type UsageEvent = v.InferOutput<typeof usageEventSchema>
 export type UsageEventName = UsageEvent['name']
@@ -250,6 +333,19 @@ export const metricsSnapshotSchema = v.object({
   end: isoDaySchema,
   /** Installs that pinged each day, by desktop and web. */
   dailyActive: v.array(v.object({ day: isoDaySchema, desktop: countSchema, web: countSchema })),
+  /**
+   * Each day's pings from versions that send a step: new installs, returning installs the steps
+   * before can account for, and pings they cannot, which replay a saved state. Older versions'
+   * pings are in `dailyActive` only.
+   */
+  installs: v.array(
+    v.object({
+      day: isoDaySchema,
+      new: countSchema,
+      returning: countSchema,
+      replayed: countSchema
+    })
+  ),
   /** Pings in the range by OS, desktop and web. */
   platforms: v.array(v.object({ os: v.string(), desktop: countSchema, web: countSchema })),
   /**

@@ -15,12 +15,14 @@ import {
   inferFormulaType,
   MAX_FORMULA_DEPTH
 } from '@open-pencil/scene-graph/variables'
+import { appendAll } from '@open-pencil/std/arrays'
 
 import { extractPluginData } from '../node-change/plugin-data'
 import { visitVariableReferences } from '../node-change/variable/expression'
 import { formulaOperatorOfFigmaFunction } from '../node-change/variable/formula'
 import { readVariableMetadata } from '../node-change/variable/metadata'
 import {
+  readLibraryModeIds,
   readModeAttribute,
   readModeConditions,
   readVariableToken,
@@ -305,7 +307,7 @@ function collectionsThrough(
     if (links?.collection) {
       collections.add(links.collection)
     }
-    pending.push(...(links?.aliases ?? []))
+    appendAll(pending, links?.aliases ?? [])
   }
   return collections
 }
@@ -330,6 +332,7 @@ export function materializeVariableResources(
     }
     const pluginData = withoutTokenPluginData(extractPluginData(resource))
     const conditions = readModeConditions(resource)
+    const sources = readLibraryModeIds(resource)
     graph.addCollection({
       id: guidToString(resource.guid),
       name: resource.name ?? 'Variables',
@@ -339,6 +342,7 @@ export function materializeVariableResources(
           modeId,
           name: mode.name,
           condition: conditions[modeId],
+          libraryModeId: sources[modeId],
           ...(mode.sortPosition ? { sortPosition: mode.sortPosition } : {})
         }
       }),

@@ -1,8 +1,9 @@
+import { randomHex } from '@open-pencil/std/random'
+
 import type { SceneGraph } from '../graph'
 import { findInstanceAncestor, instanceMainComponent } from '../instances/main-component'
-import { setInstanceOverride } from '../instances/overrides'
+import { assignmentOverrideField, setInstanceOverride } from '../instances/overrides'
 import { walkInstanceSources } from '../instances/source-walk'
-import { randomHex } from '../random'
 import type {
   ComponentPropertyDefinition,
   ComponentPropertyReferenceField,
@@ -13,6 +14,15 @@ export interface ComponentPropertyTarget {
   node: SceneNode
   field: ComponentPropertyReferenceField
   source: SceneNode
+}
+
+/**
+ * The component that defines a main component's properties: its set when it is a variant,
+ * since variants own no properties of their own (desktop 126), else the component itself.
+ */
+export function propertyOwner(graph: SceneGraph, component: SceneNode): SceneNode {
+  const parent = component.parentId ? graph.getNode(component.parentId) : undefined
+  return component.type === 'COMPONENT' && parent?.type === 'COMPONENT_SET' ? parent : component
 }
 
 export function componentPropertyOwners(graph: SceneGraph, instance: SceneNode): SceneNode[] {
@@ -191,18 +201,6 @@ export function reapplyComponentPropertyAssignments(
     }
   }
   return applied
-}
-
-const ASSIGNMENT_OVERRIDE_PREFIX = 'componentPropertyAssignments/'
-
-export function assignmentOverrideField(propertyId: string): string {
-  return `${ASSIGNMENT_OVERRIDE_PREFIX}${propertyId}`
-}
-
-export function overriddenAssignmentId(field: string): string | undefined {
-  return field.startsWith(ASSIGNMENT_OVERRIDE_PREFIX)
-    ? field.slice(ASSIGNMENT_OVERRIDE_PREFIX.length)
-    : undefined
 }
 
 export function recordAssignmentOverride(

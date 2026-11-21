@@ -3,6 +3,7 @@ import type * as Y from 'yjs'
 
 import type { SceneGraph } from '@open-pencil/scene-graph'
 import { siblingOrderKeys } from '@open-pencil/scene-graph/order-keys'
+import { appendAll } from '@open-pencil/std/arrays'
 
 import { LayerTree, type TreeMove } from '../tree/layer-tree'
 import {
@@ -187,7 +188,7 @@ function writePages(graph: SceneGraph, ynodes: YNodes, moved: readonly string[])
       const ynode = ynodes.get(layerId)
       if (!ynode || readPage(ynode) === pageId) continue
       writePage(ynode, pageId)
-      stack.push(...(graph.getNode(layerId)?.childIds ?? []))
+      appendAll(stack, graph.getNode(layerId)?.childIds ?? [])
     }
   }
 }

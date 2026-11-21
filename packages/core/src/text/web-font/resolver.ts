@@ -2,6 +2,8 @@ import { uniq } from 'es-toolkit'
 import type { FontFaceData, RemoteFontSource, ResolveFontResult } from 'unifont'
 
 import { parseFontStyle } from '@open-pencil/scene-graph/font-style'
+import { minOf } from '@open-pencil/std/arrays'
+import { toError } from '@open-pencil/std/errors'
 
 import { IS_BROWSER } from '#core/constants'
 import {
@@ -158,7 +160,7 @@ function resolvedRemoteFaces(
     const source = preferredRemoteSource(face)
     return source ? [{ source, init: face.meta?.init, priority: face.meta?.priority ?? 0 }] : []
   })
-  const preferredPriority = Math.min(...candidates.map((candidate) => candidate.priority))
+  const preferredPriority = minOf(candidates.map((candidate) => candidate.priority))
   const seen = new Set<string>()
   const faces: Array<{ source: RemoteFontSource; init?: RequestInit }> = []
   for (const candidate of candidates) {
@@ -181,7 +183,7 @@ function waitForFontOperation<T>(operation: Promise<T>, signal?: AbortSignal): P
       try {
         signal.throwIfAborted()
       } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)))
+        reject(toError(error))
       }
     }
     signal.addEventListener('abort', abort, { once: true })
@@ -193,7 +195,7 @@ function waitForFontOperation<T>(operation: Promise<T>, signal?: AbortSignal): P
       },
       (error: unknown) => {
         signal.removeEventListener('abort', abort)
-        reject(error instanceof Error ? error : new Error(String(error)))
+        reject(toError(error))
         return undefined
       }
     )

@@ -5,6 +5,8 @@ import {
   describePingFields,
   describeReportFields,
   describeUsageEvents,
+  pingSchema,
+  pingStepOf,
   reportSchema
 } from '#feedback/contract'
 
@@ -18,13 +20,17 @@ describe('contract descriptions', () => {
       'document_exported',
       'ai_reply_finished',
       'usage_stats_enabled',
-      'donate_clicked'
+      'donate_clicked',
+      'campaign_shown',
+      'campaign_dismissed',
+      'campaign_acted'
     ])
     for (const event of events) {
       expect(event.description).not.toBe('')
       for (const property of event.properties) {
         expect(property.description).not.toBe('')
-        expect(property.values.length).toBeGreaterThan(0)
+        // A campaign's ID is closed by the catalog the Worker serves, which ingest checks.
+        if (property.name !== 'campaign') expect(property.values.length).toBeGreaterThan(0)
       }
     }
     expect(events[1].properties).toEqual([
@@ -36,12 +42,42 @@ describe('contract descriptions', () => {
     ])
   })
 
-  test('describe the ping as the build plus the usage stats answer', () => {
-    expect(describePingFields().at(-1)).toEqual({
-      name: 'usageStats',
-      description: expect.stringContaining('declined'),
-      values: ['unset', 'granted', 'denied']
-    })
+  test('describe the ping as the build, the usage stats answer, and the step', () => {
+    const fields = describePingFields()
+    expect(fields.map(({ name }) => name)).toEqual(Object.keys(pingSchema.entries))
+    expect(fields.slice(-3)).toEqual([
+      {
+        name: 'usageStats',
+        description: expect.stringContaining('declined'),
+        values: ['unset', 'granted', 'denied']
+      },
+      {
+        name: 'pingDays',
+        description: expect.stringContaining('never the exact number'),
+        values: ['1', '2', '3-4', '5-8', '9-16', '17-32', '33-64', '65+']
+      },
+      {
+        name: 'enteredStep',
+        description: expect.stringContaining('into its step'),
+        values: ['true', 'false']
+      }
+    ])
+  })
+
+  test('steps double, and only the first day of a step enters it', () => {
+    const days = [1, 2, 3, 4, 5, 8, 9, 64, 65, 400]
+    expect(days.map((day) => pingStepOf(day))).toEqual([
+      { pingDays: '1', enteredStep: true },
+      { pingDays: '2', enteredStep: true },
+      { pingDays: '3-4', enteredStep: true },
+      { pingDays: '3-4', enteredStep: false },
+      { pingDays: '5-8', enteredStep: true },
+      { pingDays: '5-8', enteredStep: false },
+      { pingDays: '9-16', enteredStep: true },
+      { pingDays: '33-64', enteredStep: false },
+      { pingDays: '65+', enteredStep: true },
+      { pingDays: '65+', enteredStep: false }
+    ])
   })
 
   test('describe the build fields every ping and batch carries', () => {

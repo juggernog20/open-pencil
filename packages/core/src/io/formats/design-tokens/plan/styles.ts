@@ -6,6 +6,7 @@ import type { Color } from '@open-pencil/scene-graph/primitives'
 import { getSharedStyles } from '@open-pencil/scene-graph/shared-styles'
 import { percentLength, pixelLength, textLengthSchema } from '@open-pencil/scene-graph/text'
 import { effectBindingField, effectBindingTarget } from '@open-pencil/scene-graph/variables'
+import { appendAll } from '@open-pencil/std/arrays'
 
 import { tryParseFigmaEffects } from '#core/figma-api/effects'
 import {
@@ -251,8 +252,8 @@ function shadowList(value: unknown, resolve: Resolve, depth = 0): ReadShadows | 
   for (const entry of entries) {
     const shadows = shadowEffects(entry, resolve, depth)
     if (!shadows) return null
-    list.effects.push(...shadows.effects)
-    list.references.push(...shadows.references)
+    appendAll(list.effects, shadows.effects)
+    appendAll(list.references, shadows.references)
   }
   return list.effects.length > 0 ? list : null
 }

@@ -100,6 +100,8 @@ export const diagnosticsMessageDefaults = {
     'Enjoying OpenPencil? It’s free and open source, and a donation helps speed up its development and covers the servers and services it runs on.',
   supportNotNow: 'Not now',
   supportDonate: 'Donate',
+  /** Puts off a message from OpenPencil, such as an offer or a donation ask, until later. */
+  campaignNotNow: 'Not now',
   sharingLocalData:
     'Usage and Diagnostics keep their records on this device. Diagnostics leave it only in a report you choose to send.',
   reportError: 'Report…',
@@ -114,6 +116,7 @@ export const diagnosticsMessageDefaults = {
   reportNotePlaceholder: 'What you did, what happened, and what you expected instead.',
   reportEmail: 'Email (optional)',
   reportEmailHint: 'Only if you want us to follow up.',
+  reportEmailInvalid: 'Enter an email address, or leave it empty.',
   reportActivity: 'Include recent activity',
   reportActivityDescription:
     'The last 50 events from Diagnostics, such as errors and timings. Never chat messages or tool output.',

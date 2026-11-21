@@ -4,6 +4,7 @@ import { uniq } from 'es-toolkit/array'
 import type { SceneGraph, SceneNode } from '@open-pencil/scene-graph'
 import { defaultVariant } from '@open-pencil/scene-graph/components'
 import { deriveSlashVariantProperties } from '@open-pencil/scene-graph/variant-properties'
+import { appendAll } from '@open-pencil/std/arrays'
 
 import type { StoryProp } from './module'
 import { claimName } from './names'
@@ -161,6 +162,6 @@ export function collectGroups(
   }
   for (const child of graph.getChildren(page.id)) visit(child)
   for (const [prefix, components] of slashed)
-    groups.push(...slashGroups(page, section, prefix, components))
+    appendAll(groups, slashGroups(page, section, prefix, components))
   return groups
 }

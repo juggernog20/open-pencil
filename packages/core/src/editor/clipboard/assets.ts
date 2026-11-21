@@ -7,6 +7,7 @@ import {
   IMPORTABLE_RASTER_TYPES,
   isSVGFile
 } from '@open-pencil/scene-graph/images'
+import { maxOf } from '@open-pencil/std/arrays'
 
 import { TRANSPARENT } from '#core/constants'
 import { parentLocalPoint, resolvePasteTarget } from '#core/editor/clipboard/paste/target'
@@ -125,7 +126,7 @@ export function createClipboardAssetActions(
     const parentId = resolvePasteTarget(ctx)
     const center = parentLocalPoint(ctx, parentId, cx, cy)
     const totalWidth = sumBy(prepared, (asset) => asset.width) + ASSET_GAP * (prepared.length - 1)
-    const maxHeight = Math.max(...prepared.map((asset) => asset.height))
+    const maxHeight = maxOf(prepared.map((asset) => asset.height))
     let x = center.x - totalWidth / 2
     const y = center.y - maxHeight / 2
     const created: string[] = []
@@ -166,12 +167,13 @@ export function createClipboardAssetActions(
     )
   }
 
-  async function placeFiles(files: File[], cx: number, cy: number) {
+  /** Places pictures and SVG files around a point; false when none of them could be read. */
+  async function placeFiles(files: File[], cx: number, cy: number): Promise<boolean> {
     const prepared = (await Promise.all(files.map(prepareAsset))).filter(
       (asset): asset is PreparedAsset => asset !== null
     )
     await loadSVGFonts(prepared)
-    placeAssets(prepared, cx, cy, 'Place files')
+    return placeAssets(prepared, cx, cy, 'Place files')
   }
 
   /** Paste SVG markup as layers, as Figma does; false when the text is not SVG. */

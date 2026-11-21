@@ -3,6 +3,7 @@ import { useLocalStorage } from '@vueuse/core'
 import { computed, ref, shallowRef } from 'vue'
 
 import type { DocumentKind } from '@open-pencil/scene-graph'
+import { errorMessage } from '@open-pencil/std/errors'
 import { useDocumentWorkspace } from '@open-pencil/vue/document/workspace'
 import { useI18n } from '@open-pencil/vue/i18n'
 
@@ -29,7 +30,11 @@ import { createStoredDocument } from '@/app/storage/workspace/create'
 import { activeStorageLocation, createStorageWorkspaceSource } from '@/app/storage/workspace/source'
 import { openStorageDocumentInNewTab } from '@/app/tabs'
 import { recoverable } from '@/app/tabs/recovery'
-import { CloudSharedSection, CloudWorkspaceSection } from '@/components/cloud/integration'
+import {
+  CloudSharedSection,
+  CloudTrashSection,
+  CloudWorkspaceSection
+} from '@/components/cloud/integration'
 import DocumentDeleteDialog from '@/components/home/document/DocumentDeleteDialog.vue'
 import DocumentEntry from '@/components/home/document/DocumentEntry.vue'
 import { ofKind, type DocumentKindFilter } from '@/components/home/document/filter'
@@ -54,6 +59,8 @@ const places = useHomeLocations()
 
 /** A new document lands in the place Home shows: a Cloud workspace, the bucket, or a local file. */
 function newDocument(kind: DocumentKind) {
+  // Until Cloud answers, the chosen workspace is unknown, and a local file is not what was meant.
+  if (places.settling.value) return
   const target = newDesignTarget.value
   if (target) void createStoredDocument(target.location, kind)
   else emit('new-document', kind)
@@ -89,7 +96,7 @@ async function retryCredentialAccess() {
 const storageError = computed(() => {
   const error = storageWorkspace.error.value
   if (error == null) return null
-  return error instanceof Error ? error.message : String(error)
+  return errorMessage(error)
 })
 const storageDescription = computed(() => {
   const provider = storageProviderRegistry.get(activeStorageProviderID.value)
@@ -121,7 +128,7 @@ const sidebarStorage = computed(() => {
 const newDesignTarget = computed<{ location: StorageLocation; label: string } | null>(() => {
   const workspace = places.workspace.value
   const serverId = places.serverId.value
-  if (workspace && serverId && workspace.role !== 'viewer') {
+  if (workspace && serverId && workspace.role !== 'viewer' && !workspace.public) {
     return {
       location: {
         providerId: CLOUD_STORAGE_PROVIDER_ID,
@@ -131,9 +138,11 @@ const newDesignTarget = computed<{ location: StorageLocation; label: string } | 
       label: workspace.name
     }
   }
-  // Shared documents belong to other people's workspaces, so a new one goes to the person's own.
-  const own = places.workspaces.value.find((entry) => entry.role !== 'viewer')
-  if (places.location.value.kind === 'shared' && own && serverId) {
+  // Shared documents belong to other people's workspaces, Trash to none, and what is made in the
+  // community gallery is public at once, so a new one goes to the person's own.
+  const own = places.workspaces.value.find((entry) => entry.role !== 'viewer' && !entry.public)
+  const kind = places.location.value.kind
+  if ((kind === 'shared' || kind === 'trash' || workspace?.public) && own && serverId) {
     return {
       location: { providerId: CLOUD_STORAGE_PROVIDER_ID, profileId: serverId, containerId: own.id },
       label: own.name
@@ -189,7 +198,7 @@ async function openRecent(document: RecentDocument): Promise<void> {
     const listed = storageWorkspace.lastRefreshedAt.value ? storageDocuments.value : undefined
     await openRecentDocument(document, listed)
   } catch (error) {
-    openError.value = error instanceof Error ? error.message : String(error)
+    openError.value = errorMessage(error)
   }
 }
 
@@ -198,7 +207,7 @@ async function openStorageDocument(document: StorageDocument): Promise<void> {
   try {
     await openStorageDocumentInNewTab(document)
   } catch (error) {
-    openError.value = error instanceof Error ? error.message : String(error)
+    openError.value = errorMessage(error)
   }
 }
 
@@ -216,6 +225,7 @@ function formattedDate(updatedAt: string): string {
         :cloud="CLOUD_INCLUDED"
         :active="places.active.value"
         :account="places.account.value"
+        :checking="places.checking.value"
         :workspaces="places.workspaces.value"
         :storage="sidebarStorage"
         @select="places.select"
@@ -232,6 +242,7 @@ function formattedDate(updatedAt: string): string {
         :cloud="CLOUD_INCLUDED"
         :active="places.active.value"
         :account="places.account.value"
+        :checking="places.checking.value"
         :workspaces="places.workspaces.value"
         :storage="sidebarStorage"
         @select="places.select"
@@ -242,6 +253,7 @@ function formattedDate(updatedAt: string): string {
     <HomeSearchActions
       v-model="query"
       :destination="newDesignTarget?.label ?? null"
+      :creating-disabled="places.settling.value"
       @new-document="newDocument"
     />
 
@@ -258,6 +270,11 @@ function formattedDate(updatedAt: string): string {
     />
     <CloudSharedSection
       v-else-if="places.location.value.kind === 'shared' && places.serverId.value"
+      :server-id="places.serverId.value"
+      :query="normalizedQuery"
+    />
+    <CloudTrashSection
+      v-else-if="places.location.value.kind === 'trash' && places.serverId.value"
       :server-id="places.serverId.value"
       :query="normalizedQuery"
     />
@@ -287,7 +304,7 @@ function formattedDate(updatedAt: string): string {
               {{ storageDescription }}
             </p>
           </div>
-          <div class="ml-auto flex shrink-0 items-center gap-1">
+          <div class="ms-auto flex shrink-0 items-center gap-1">
             <IconButton
               :label="common.refresh"
               class="size-10 sm:size-7"

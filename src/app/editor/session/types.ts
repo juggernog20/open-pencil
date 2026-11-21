@@ -24,6 +24,7 @@ export function createInitialAppEditorState(pageId: string): AppEditorState {
     actionToast: null,
     mobileDrawerSnap: 'closed',
     autosaveEnabled: false,
+    roomKeepsEdits: false,
     cursorCanvasX: null,
     cursorCanvasY: null,
     renameSelectionOpen: false,
@@ -31,7 +32,6 @@ export function createInitialAppEditorState(pageId: string): AppEditorState {
     statusesOpen: false,
     iconPickerOpen: false,
     renameNodeId: null,
-    numberFieldFocused: false,
     preparation: null,
     canvasPresentation: null,
     documentColorSpace: 'srgb'
@@ -47,6 +47,11 @@ export type AppEditorState = EditorState & {
   actionToast: string | null
   mobileDrawerSnap: 'closed' | 'half' | 'full'
   autosaveEnabled: boolean
+  /**
+   * Set while the document's Cloud room holds this tab's edits: the relay keeps every one, so the
+   * tab saves a checkpoint now and then and closes without asking.
+   */
+  roomKeepsEdits: boolean
   cursorCanvasX: number | null
   cursorCanvasY: number | null
   renameSelectionOpen: boolean
@@ -57,7 +62,6 @@ export type AppEditorState = EditorState & {
   /** The icon picker, opened from the toolbar, the Object menu, or the palette. */
   iconPickerOpen: boolean
   renameNodeId: string | null
-  numberFieldFocused: boolean
   preparation: EditorPreparation | null
   /** Color space the canvas is presenting, reported by the surface. */
   canvasPresentation: PresentationColorSpace | null
@@ -67,7 +71,11 @@ export type AppEditorState = EditorState & {
 
 /** How the app switches pages: inside a preparation, with the loader up until the page is shown. */
 export interface AppSwitchPageOptions {
-  /** The preparation the switch belongs to, such as a document opening; else it starts its own. */
+  /**
+   * The preparation the switch belongs to, such as a document opening; else it starts its own.
+   * A page that cannot be shown fails it as `render-failed`, and the switch still resolves, since
+   * the page is already in.
+   */
   preparation?: EditorPreparationHandle
   /**
    * Runs once the page is committed and before its first frame counts as shown, such as

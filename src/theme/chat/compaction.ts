@@ -1,3 +1,5 @@
+import { focusStyles } from '@open-pencil/theme'
+
 import { collapsibleContentMotion } from '../collapsible/collapsible'
 
 /**
@@ -10,8 +12,10 @@ export default {
     root: 'flex flex-col py-1',
     rule: 'flex items-center gap-2 text-2xs text-muted',
     line: 'h-px min-w-3 flex-1 bg-border',
-    toggle:
-      'inline-flex min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 outline-none hover:bg-hover hover:text-surface focus-visible:ring-2 focus-visible:ring-accent',
+    toggle: [
+      'inline-flex min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-hover hover:text-surface',
+      focusStyles.ring
+    ],
     icon: 'size-3 shrink-0',
     title: 'truncate',
     chevron:

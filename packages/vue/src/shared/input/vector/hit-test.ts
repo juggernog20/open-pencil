@@ -1,5 +1,5 @@
 import type { Editor } from '@open-pencil/core'
-import { nearestPointOnNetwork, regionAtPoint, vectorHandleParts } from '@open-pencil/core/vector'
+import { nearestPointOnNetwork, regionAtPoint, shownHandles } from '@open-pencil/core/vector'
 import type { VectorSegment } from '@open-pencil/scene-graph'
 import type { Rect } from '@open-pencil/scene-graph/primitives'
 
@@ -69,24 +69,7 @@ export function editVerticesInRect(editor: Editor, rect: Rect): number[] {
   )
 }
 
-function getHandleVisibleVertices(editor: Editor): Set<number> {
-  const es = editor.getNodeEditState()
-  if (!es) return new Set()
-  const seed = new Set(es.selectedVertexIndices)
-  for (const handleId of es.selectedHandles) {
-    const handle = vectorHandleParts(handleId)
-    if (!handle || handle.segmentIndex >= es.segments.length) continue
-    const seg = es.segments[handle.segmentIndex]
-    seed.add(handle.tangentField === 'tangentStart' ? seg.start : seg.end)
-  }
-  const visible = new Set(seed)
-  for (const seg of es.segments) {
-    if (seed.has(seg.start)) visible.add(seg.end)
-    if (seed.has(seg.end)) visible.add(seg.start)
-  }
-  return visible
-}
-
+/** The topmost handle of the path being edited under a canvas point: the last the canvas draws. */
 export function hitTestEditHandle(
   editor: Editor,
   cx: number,
@@ -98,33 +81,15 @@ export function hitTestEditHandle(
 } | null {
   const es = editor.getNodeEditState()
   if (!es) return null
-  const iz = 1 / editor.state.zoom
-  const visible = getHandleVisibleVertices(editor)
-
-  for (let si = 0; si < es.segments.length; si++) {
-    const seg = es.segments[si]
-
-    if (visible.has(seg.start)) {
-      const ts = seg.tangentStart
-      if (ts.x !== 0 || ts.y !== 0) {
-        const hx = es.vertices[seg.start].x + ts.x
-        const hy = es.vertices[seg.start].y + ts.y
-        if (Math.hypot(cx - hx, cy - hy) < HANDLE_HIT_THRESHOLD_NE * iz) {
-          return { segmentIndex: si, tangentField: 'tangentStart', vertexIndex: seg.start }
-        }
+  const reach = HANDLE_HIT_THRESHOLD_NE / editor.state.zoom
+  const hit = shownHandles(es).findLast(
+    ({ point }) => Math.hypot(cx - point.x, cy - point.y) < reach
+  )
+  return hit
+    ? {
+        segmentIndex: hit.segmentIndex,
+        tangentField: hit.tangentField,
+        vertexIndex: hit.vertexIndex
       }
-    }
-
-    if (visible.has(seg.end)) {
-      const te = seg.tangentEnd
-      if (te.x !== 0 || te.y !== 0) {
-        const hx = es.vertices[seg.end].x + te.x
-        const hy = es.vertices[seg.end].y + te.y
-        if (Math.hypot(cx - hx, cy - hy) < HANDLE_HIT_THRESHOLD_NE * iz) {
-          return { segmentIndex: si, tangentField: 'tangentEnd', vertexIndex: seg.end }
-        }
-      }
-    }
-  }
-  return null
+    : null
 }

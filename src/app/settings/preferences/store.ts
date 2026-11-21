@@ -1,11 +1,14 @@
 import { useLocalStorage } from '@vueuse/core'
 import { uniq } from 'es-toolkit'
 import * as v from 'valibot'
+import { toRaw } from 'vue'
 
 import { DEFAULT_SNAPPING_PREFERENCES, type SnappingPreferences } from '@open-pencil/core'
 import { COMMENT_SORTS, type CommentSort } from '@open-pencil/scene-graph/comments'
+import { TOOLBAR_ALIGNS, TOOLBAR_SIDES } from '@open-pencil/vue/primitives/Toolbar'
 
 import { DEFAULT_AGENT_STEPS, resolveAgentStepLimit } from '@/app/ai/reply/step-limit'
+import { DEFAULT_TOOLBAR_DOCK, type ToolbarDock } from '@/app/editor/toolbar/dock'
 import {
   DEFAULT_TOOLBAR_LAYOUT,
   normalizeToolbarLayout,
@@ -15,6 +18,10 @@ import { DEFAULT_RECENT_FILES_LIMIT } from '@/app/recent-files/limit'
 import { recentFilesLimitSchema } from '@/app/recent-files/schema'
 import { DEFAULT_ACCENT } from '@/app/shell/accent/palette'
 import { accentPreferenceSchema, type AccentPreference } from '@/app/shell/accent/schema'
+import {
+  UPDATE_CHANNEL_PREFERENCES,
+  type UpdateChannelPreference
+} from '@/app/shell/updater/channel'
 
 export const INTERFACE_SCALES = [100, 110, 125, 150] as const
 export type InterfaceScale = (typeof INTERFACE_SCALES)[number]
@@ -75,9 +82,27 @@ export interface SharingPreferences {
 export const AI_SETUP_STATES = ['pending', 'done'] as const
 export type AISetupState = (typeof AI_SETUP_STATES)[number]
 
-/** When the donation question may show again, as a time in milliseconds; `null` before it was ever due. */
+/**
+ * When the donation question may show again, as a time in milliseconds; `null` before it was ever
+ * due. Builds before campaigns kept it; the campaigns carry it over once and clear it.
+ */
 export interface DonationPreferences {
   promptAfter: number | null
+}
+
+/** What one campaign was answered with, as times in milliseconds, kept on the device. */
+export interface CampaignRecordPreferences {
+  /** When the person chose Not now or closed it. */
+  dismissedAt?: number
+  /** When the person followed its action. */
+  actedAt?: number
+}
+
+/** The campaign clock: when the install first ran, its last prompt, and each campaign's answers. */
+export interface CampaignPreferences {
+  installedAt: number | null
+  lastPromptAt: number | null
+  records: Record<string, CampaignRecordPreferences>
 }
 
 /** Which events send a system notification while OpenPencil is out of view. */
@@ -88,6 +113,40 @@ export interface NotificationPreferences {
   agentFinished: boolean
   /** An AI reply ended with an error. */
   agentFailed: boolean
+  /** Someone names the person in a comment on a Cloud document. */
+  commentMention: boolean
+  /** Someone replies in a Cloud comment thread the person wrote in. */
+  commentReply: boolean
+  /** An automatic save of an open document failed. */
+  saveFailed: boolean
+  /** An open Cloud document was changed in two places and waits for a choice. */
+  cloudConflict: boolean
+  /** An open Cloud document became view only because its owner's storage is full. */
+  cloudStorageFull: boolean
+}
+
+/** How the person's Design instructions meet OpenPencil's: added after them, or in their place. */
+export const DESIGN_PROMPT_MODES = ['add', 'replace'] as const
+export type DesignPromptMode = (typeof DESIGN_PROMPT_MODES)[number]
+
+/**
+ * The prompts the person wrote in place of OpenPencil's; null keeps the built-in one. The Design
+ * prompt is plain Markdown, which adds to the built-in instructions or replaces them; the others
+ * are Knap templates (`src/app/ai/prompts/`).
+ */
+export interface PromptPreferences {
+  review: string | null
+  title: string | null
+  summary: string | null
+  design: { mode: DesignPromptMode; text: string }
+}
+
+/** Desktop update checks. The menu item is separate from the silent launch check. */
+export interface UpdatePreferences {
+  /** Silent check a few seconds after the desktop app opens. */
+  checkOnStartup: boolean
+  /** Stable releases or nightly builds; `build` follows the installed build. */
+  channel: UpdateChannelPreference
 }
 
 export interface AppPreferences {
@@ -95,6 +154,8 @@ export interface AppPreferences {
     animations: AnimationPreference
     accent: AccentPreference
     interfaceScale: InterfaceScale
+    /** Whether a right-to-left language mirrors the interface; left-to-right languages ignore it. */
+    mirrorInterface: boolean
   }
   chat: {
     reasoningDisplay: ReasoningDisplay
@@ -107,6 +168,10 @@ export interface AppPreferences {
     tokenUsage: TokenUsageDisplay
   }
   files: { recentLimit: number }
+  import: {
+    /** Inline SVG in imported HTML that draws an Iconify icon becomes that icon. */
+    nameIcons: boolean
+  }
   version: 1
   recovery: {
     enabled: boolean
@@ -120,16 +185,26 @@ export interface AppPreferences {
   designCheck: DesignCheckPreferences
   comments: CommentPreferences
   toolbar: ToolbarLayout
+  /** Where the desktop toolbar floats over the canvas. */
+  toolbarDock: ToolbarDock
   onboarding: {
     aiSetup: AISetupState
   }
   sharing: SharingPreferences
   donation: DonationPreferences
+  campaigns: CampaignPreferences
   notifications: NotificationPreferences
+  updates: UpdatePreferences
+  prompts: PromptPreferences
 }
 
 export const DEFAULT_APP_PREFERENCES: Readonly<AppPreferences> = {
-  appearance: { animations: 'system', accent: { ...DEFAULT_ACCENT }, interfaceScale: 100 },
+  appearance: {
+    animations: 'system',
+    accent: { ...DEFAULT_ACCENT },
+    interfaceScale: 100,
+    mirrorInterface: true
+  },
   chat: {
     reasoningDisplay: 'collapsed',
     maxAgentSteps: DEFAULT_AGENT_STEPS,
@@ -139,13 +214,14 @@ export const DEFAULT_APP_PREFERENCES: Readonly<AppPreferences> = {
     tokenUsage: 'hover'
   },
   files: { recentLimit: DEFAULT_RECENT_FILES_LIMIT },
+  import: { nameIcons: true },
   version: 1,
   recovery: { enabled: true },
   editing: {
     snapping: { ...DEFAULT_SNAPPING_PREFERENCES }
   },
   navigation: { zoomSpeed: 1 },
-  designCheck: { showOnCanvas: true, preset: 'recommended', disabledRules: [] },
+  designCheck: { showOnCanvas: false, preset: 'recommended', disabledRules: [] },
   comments: {
     showOnCanvas: true,
     showResolved: false,
@@ -154,10 +230,23 @@ export const DEFAULT_APP_PREFERENCES: Readonly<AppPreferences> = {
     sort: 'newest'
   },
   toolbar: structuredClone(DEFAULT_TOOLBAR_LAYOUT),
+  toolbarDock: { ...DEFAULT_TOOLBAR_DOCK },
   onboarding: { aiSetup: 'pending' },
   sharing: { dailyPing: true, usageStats: 'unset' },
   donation: { promptAfter: null },
-  notifications: { agentNeedsInput: true, agentFinished: false, agentFailed: false }
+  campaigns: { installedAt: null, lastPromptAt: null, records: {} },
+  notifications: {
+    agentNeedsInput: true,
+    agentFinished: false,
+    agentFailed: false,
+    commentMention: true,
+    commentReply: false,
+    saveFailed: true,
+    cloudConflict: true,
+    cloudStorageFull: true
+  },
+  updates: { checkOnStartup: true, channel: 'build' },
+  prompts: { review: null, title: null, summary: null, design: { mode: 'add', text: '' } }
 }
 
 const STORAGE_KEY = 'open-pencil:preferences:v1'
@@ -169,12 +258,15 @@ function section<TEntries extends v.ObjectEntries>(entries: TEntries) {
 }
 
 const defaults = DEFAULT_APP_PREFERENCES
+/** A moment as milliseconds since the epoch. */
+const timeSchema = v.pipe(v.number(), v.integer(), v.minValue(0))
 const snapping = defaults.editing.snapping
 
 /** Stored preferences, read field by field so one bad value keeps the rest. */
 const appPreferencesSchema = section({
   appearance: section({
     interfaceScale: v.fallback(v.picklist(INTERFACE_SCALES), defaults.appearance.interfaceScale),
+    mirrorInterface: v.fallback(v.boolean(), defaults.appearance.mirrorInterface),
     animations: v.fallback(v.picklist(ANIMATION_PREFERENCES), defaults.appearance.animations),
     accent: v.fallback(accentPreferenceSchema, () => ({ ...DEFAULT_ACCENT }))
   }),
@@ -195,6 +287,7 @@ const appPreferencesSchema = section({
   files: section({
     recentLimit: v.fallback(recentFilesLimitSchema, defaults.files.recentLimit)
   }),
+  import: section({ nameIcons: v.fallback(v.boolean(), defaults.import.nameIcons) }),
   version: v.fallback(v.literal(1), 1),
   recovery: section({ enabled: v.fallback(v.boolean(), defaults.recovery.enabled) }),
   editing: section({
@@ -237,6 +330,10 @@ const appPreferencesSchema = section({
     ),
     () => structuredClone(DEFAULT_TOOLBAR_LAYOUT)
   ),
+  toolbarDock: section({
+    side: v.fallback(v.picklist(TOOLBAR_SIDES), defaults.toolbarDock.side),
+    align: v.fallback(v.picklist(TOOLBAR_ALIGNS), defaults.toolbarDock.align)
+  }),
   onboarding: section({
     aiSetup: v.fallback(v.picklist(AI_SETUP_STATES), defaults.onboarding.aiSetup)
   }),
@@ -250,10 +347,39 @@ const appPreferencesSchema = section({
       defaults.donation.promptAfter
     )
   }),
+  campaigns: section({
+    installedAt: v.fallback(v.nullable(timeSchema), defaults.campaigns.installedAt),
+    lastPromptAt: v.fallback(v.nullable(timeSchema), defaults.campaigns.lastPromptAt),
+    records: v.fallback(
+      v.record(
+        v.string(),
+        v.object({ dismissedAt: v.optional(timeSchema), actedAt: v.optional(timeSchema) })
+      ),
+      () => ({})
+    )
+  }),
   notifications: section({
     agentNeedsInput: v.fallback(v.boolean(), defaults.notifications.agentNeedsInput),
     agentFinished: v.fallback(v.boolean(), defaults.notifications.agentFinished),
-    agentFailed: v.fallback(v.boolean(), defaults.notifications.agentFailed)
+    agentFailed: v.fallback(v.boolean(), defaults.notifications.agentFailed),
+    commentMention: v.fallback(v.boolean(), defaults.notifications.commentMention),
+    commentReply: v.fallback(v.boolean(), defaults.notifications.commentReply),
+    saveFailed: v.fallback(v.boolean(), defaults.notifications.saveFailed),
+    cloudConflict: v.fallback(v.boolean(), defaults.notifications.cloudConflict),
+    cloudStorageFull: v.fallback(v.boolean(), defaults.notifications.cloudStorageFull)
+  }),
+  updates: section({
+    checkOnStartup: v.fallback(v.boolean(), defaults.updates.checkOnStartup),
+    channel: v.fallback(v.picklist(UPDATE_CHANNEL_PREFERENCES), defaults.updates.channel)
+  }),
+  prompts: section({
+    review: v.fallback(v.nullable(v.string()), null),
+    title: v.fallback(v.nullable(v.string()), null),
+    summary: v.fallback(v.nullable(v.string()), null),
+    design: section({
+      mode: v.fallback(v.picklist(DESIGN_PROMPT_MODES), defaults.prompts.design.mode),
+      text: v.fallback(v.string(), defaults.prompts.design.text)
+    })
   })
 })
 
@@ -268,17 +394,26 @@ export const appPreferences = useLocalStorage<AppPreferences>(
   { mergeDefaults: (storageValue) => parseAppPreferences(storageValue) }
 )
 
+/**
+ * The preferences as stored, for updates to spread. Reading `appPreferences` wraps every section
+ * in a reactive proxy; spread into the next value, those would be stored too and make the
+ * preferences impossible to clone or save.
+ */
+function stored(): AppPreferences {
+  return toRaw(appPreferences.value)
+}
+
 export function updateAnimationPreference(animations: AnimationPreference): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    appearance: { ...appPreferences.value.appearance, animations }
+    ...stored(),
+    appearance: { ...stored().appearance, animations }
   }
 }
 
 export function updateAccentPreference(accent: AccentPreference): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    appearance: { ...appPreferences.value.appearance, accent }
+    ...stored(),
+    appearance: { ...stored().appearance, accent }
   }
 }
 
@@ -289,41 +424,52 @@ export function updateRecoveryEnabled(enabled: boolean): void {
 }
 
 export function updateAISetupState(aiSetup: AISetupState): void {
-  appPreferences.value = { ...appPreferences.value, onboarding: { aiSetup } }
+  appPreferences.value = { ...stored(), onboarding: { aiSetup } }
 }
 
 export function updateSharingPreferences(changes: Partial<SharingPreferences>): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    sharing: { ...appPreferences.value.sharing, ...changes }
+    ...stored(),
+    sharing: { ...stored().sharing, ...changes }
   }
 }
 
 export function updateDonationPreferences(changes: Partial<DonationPreferences>): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    donation: { ...appPreferences.value.donation, ...changes }
+    ...stored(),
+    donation: { ...stored().donation, ...changes }
+  }
+}
+
+export function updateCampaignPreferences(changes: Partial<CampaignPreferences>): void {
+  appPreferences.value = {
+    ...stored(),
+    campaigns: { ...stored().campaigns, ...changes }
   }
 }
 
 export function updateNotificationPreferences(changes: Partial<NotificationPreferences>): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    notifications: { ...appPreferences.value.notifications, ...changes }
+    ...stored(),
+    notifications: { ...stored().notifications, ...changes }
   }
 }
 
 export function updateZoomSpeed(zoomSpeed: ZoomSpeed): void {
-  appPreferences.value = { ...appPreferences.value, navigation: { zoomSpeed } }
+  appPreferences.value = { ...stored(), navigation: { zoomSpeed } }
+}
+
+export function updateNameImportedIcons(nameIcons: boolean): void {
+  appPreferences.value = { ...stored(), import: { nameIcons } }
 }
 
 export function updateSnappingPreferences(changes: Partial<SnappingPreferences>): void {
   appPreferences.value = {
-    ...appPreferences.value,
+    ...stored(),
     editing: {
-      ...appPreferences.value.editing,
+      ...stored().editing,
       snapping: {
-        ...appPreferences.value.editing.snapping,
+        ...stored().editing.snapping,
         ...changes
       }
     }
@@ -332,25 +478,62 @@ export function updateSnappingPreferences(changes: Partial<SnappingPreferences>)
 
 export function updateDesignCheckPreferences(changes: Partial<DesignCheckPreferences>): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    designCheck: { ...appPreferences.value.designCheck, ...changes }
+    ...stored(),
+    designCheck: { ...stored().designCheck, ...changes }
   }
 }
 
 export function updateCommentPreferences(changes: Partial<CommentPreferences>): void {
   appPreferences.value = {
-    ...appPreferences.value,
-    comments: { ...appPreferences.value.comments, ...changes }
+    ...stored(),
+    comments: { ...stored().comments, ...changes }
   }
 }
 
 export function updateToolbarLayout(toolbar: ToolbarLayout): void {
-  appPreferences.value = { ...appPreferences.value, toolbar }
+  appPreferences.value = { ...stored(), toolbar }
+}
+
+export function updateToolbarDock(changes: Partial<ToolbarDock>): void {
+  appPreferences.value = {
+    ...stored(),
+    toolbarDock: { ...stored().toolbarDock, ...changes }
+  }
 }
 
 export function updateInterfaceScale(interfaceScale: InterfaceScale): void {
   appPreferences.value = {
+    ...stored(),
+    appearance: { ...stored().appearance, interfaceScale }
+  }
+}
+
+export function updateMirrorInterface(mirrorInterface: boolean): void {
+  appPreferences.value = {
+    ...stored(),
+    appearance: { ...stored().appearance, mirrorInterface }
+  }
+}
+
+export function updateStartupUpdateCheck(checkOnStartup: boolean): void {
+  appPreferences.value = {
+    ...stored(),
+    updates: { ...stored().updates, checkOnStartup }
+  }
+}
+
+export function updateUpdateChannel(channel: UpdateChannelPreference): void {
+  appPreferences.value = {
     ...appPreferences.value,
-    appearance: { ...appPreferences.value.appearance, interfaceScale }
+    updates: { ...appPreferences.value.updates, channel }
+  }
+}
+
+export function updatePromptPreferences(changes: Partial<PromptPreferences>): void {
+  // Raw, so the stored value holds plain objects rather than reactive views of them.
+  const current = toRaw(appPreferences.value)
+  appPreferences.value = {
+    ...current,
+    prompts: { ...current.prompts, design: { ...current.prompts.design }, ...changes }
   }
 }

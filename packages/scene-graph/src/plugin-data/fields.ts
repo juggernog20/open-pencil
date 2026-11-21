@@ -171,6 +171,12 @@ export const OPEN_PENCIL_PLUGIN_DATA = {
   textPathBox: jsonPluginDataField('textPathBox', 'format', textPathBoxSchema),
   /** The library asset a node was inserted from. */
   librarySource: jsonPluginDataField('librarySource', 'bookkeeping', librarySourceSchema),
+  /** The library source layer a library definition's layer copies, on every definition layer. */
+  libraryLayer: jsonPluginDataField(
+    'libraryLayer',
+    'bookkeeping',
+    v.pipe(v.string(), v.nonEmpty(), v.maxLength(1024))
+  ),
   /**
    * The document root's id, on the DOCUMENT node, whose own GUID is always Figma's `0:0`; the
    * root keeps it across a save as every layer keeps its GUID.
@@ -210,6 +216,8 @@ export const OPEN_PENCIL_PLUGIN_DATA = {
     'format',
     v.pipe(v.string(), v.trim(), v.maxLength(100), v.regex(MODE_ATTRIBUTE_PATTERN))
   ),
+  /** The library mode each mode of a copied collection came from, by the file's mode id. */
+  libraryModes: jsonPluginDataField('libraryModes', 'format', v.record(v.string(), v.string())),
   /** One entry per paint picked in OkHCL, so the picker reopens on the same coordinates. */
   okhcl: jsonPluginDataField('okhcl', 'content', okhclSchema),
   /** How a main component or component set behaves as a control in preview. */

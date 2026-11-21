@@ -94,6 +94,8 @@ export const IS_CLOUD_SITE =
   typeof __OPENPENCIL_CLOUD_SITE__ === 'boolean' && __OPENPENCIL_CLOUD_SITE__
 /** Where the desktop app's installers are published. */
 export const DESKTOP_DOWNLOAD_URL = 'https://github.com/open-pencil/open-pencil/releases/latest'
+/** The download page's beta section, with the newest desktop beta's installers. */
+export const DESKTOP_BETA_DOWNLOAD_URL = 'https://openpencil.dev/download#beta'
 export const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download'
 
 /**
@@ -103,9 +105,16 @@ export const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download'
 const DOCS_ORIGIN = 'https://openpencil.dev'
 export const MCP_SERVER_DOCS_URL = `${DOCS_ORIGIN}/programmable/mcp-server`
 /** The guide to OpenPencil Cloud, linked from the Cloud server's own pages. */
-export const CLOUD_DOCS_URL = `${DOCS_ORIGIN}/user-guide/openpencil-cloud`
+export const CLOUD_DOCS_URL = `${DOCS_ORIGIN}/cloud/`
 export const WEBMCP_DOCS_URL = `${MCP_SERVER_DOCS_URL}#webmcp`
 export const MCP_CONNECTIONS_DOCS_URL = `${DOCS_ORIGIN}/programmable/ai-chat#external-mcp-connections`
+/** The Help menu's links: the guides, the shortcut reference, the community, and the source. */
+export const DOCS_URL = `${DOCS_ORIGIN}/getting-started`
+export const KEYBOARD_SHORTCUTS_URL = `${DOCS_ORIGIN}/reference/keyboard-shortcuts`
+/** Where SF Symbols are offered and how to get them, for hosts that cannot draw them. */
+export const SF_SYMBOLS_DOCS_URL = `${DOCS_ORIGIN}/user-guide/icons#sf-symbols`
+export const COMMUNITY_URL = 'https://discord.gg/4wXc9fuZfm'
+export const REPOSITORY_URL = 'https://github.com/open-pencil/open-pencil'
 export const CODING_AGENTS_GUIDE_URL = `${DOCS_ORIGIN}/programmable/coding-agents`
 export const PI_GUIDE_URL = `${CODING_AGENTS_GUIDE_URL}#pi`
 
@@ -162,6 +171,3 @@ export const DEFAULT_TEXT_HEIGHT = 24
 export const ACP_PERMISSION_TIMEOUT_MS = 60_000
 /** How long a request waits unanswered before a notification says an agent needs you. */
 export const AGENT_INPUT_NOTIFY_DELAY_MS = 6_000
-
-/** The viewport HTML is laid out in when imported: a common desktop design width. */
-export const HTML_IMPORT_VIEWPORT = { width: 1440, height: 900 } as const
