@@ -5,6 +5,7 @@ import * as v from 'valibot'
 import { DOCUMENT_EXTENSIONS } from '@open-pencil/core/io'
 import { parseToolArgs } from '@open-pencil/core/tools'
 import type { DocumentKind } from '@open-pencil/scene-graph'
+import { createDeferred } from '@open-pencil/std/async'
 
 import {
   resolveAutomationTarget,
@@ -17,7 +18,7 @@ import { documentPathFor } from '@/app/document/io/names'
 import type { EditorStore } from '@/app/editor/active-store'
 import { openBrowserFileFromURL } from '@/app/shell/menu/files'
 import { openFileFromPath } from '@/app/shell/menu/use'
-import { closeTab, createTab, getTabById } from '@/app/tabs'
+import { closeTab, createTab, getTabById, type OpenInTabOptions } from '@/app/tabs'
 import { isTauri } from '@/app/tauri/env'
 
 /** Where a browser app reads and writes the paths the file tools name: the MCP server's `/files/`. */
@@ -84,6 +85,29 @@ function unsavedDocumentError(store: AutomationTarget['store']): Error {
     `"${name}" was opened from "${source}", which cannot be saved. ` +
       `Save to "${documentPathFor(source, kind)}" instead.`
   )
+}
+
+/**
+ * Opens a file and settles once its first page is in place, with the store it opened into, or
+ * once the open itself settles. Opening waits for the canvas to show the page, and a window
+ * nobody shows draws nothing, so an agent would wait until someone brings the app forward.
+ * Past that point the open goes on, and a failure shows in its tab as it does for a person.
+ */
+async function openUntilReady(
+  open: (options: Pick<OpenInTabOptions, 'onReady'>) => Promise<EditorStore | undefined>
+): Promise<EditorStore | undefined> {
+  const ready = createDeferred<EditorStore>()
+  let isReady = false
+  const opening = open({
+    onReady: (store) => {
+      isReady = true
+      ready.resolve(store)
+    }
+  })
+  void opening.catch((error: unknown) => {
+    if (isReady) console.warn('[Automation] An opened file failed to show', error)
+  })
+  return Promise.race([ready.promise, opening])
 }
 
 const closeArgsSchema = v.object({
@@ -179,16 +203,13 @@ export function createFileHandlers(files?: AutomationFiles) {
     if (!path) throw new Error('Missing "path" in args')
     // The opened tab's own store, not the active one: another tab can come to the front while
     // the file is read and decoded.
-    let store: EditorStore | undefined
-    if (isTauri()) {
-      store = await openFileFromPath(path)
-    } else if (files) {
+    const store = await openUntilReady((options) => {
+      if (isTauri()) return openFileFromPath(path, options)
       // The browser cannot read the path, so it fetches it from the MCP server, with the same
       // cap and format check as every other browser open.
-      store = await openBrowserFileFromURL(files.url(path), { headers: files.headers })
-    } else {
-      store = await openBrowserFileFromURL(resolveBrowserFileURL(path))
-    }
+      if (files) return openBrowserFileFromURL(files.url(path), { headers: files.headers }, options)
+      return openBrowserFileFromURL(resolveBrowserFileURL(path), undefined, options)
+    })
     if (!store) throw new Error(`Could not open "${path}"`)
     const target = resolveAutomationTarget(store, undefined)
     return responseWithTarget({ ok: true, result: { opened: true } }, target)

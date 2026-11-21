@@ -16,7 +16,7 @@ import type { EditorStore } from '@/app/editor/active-store'
 import { notificationMessages } from '@/app/i18n/notifications'
 import { rememberRecentFile } from '@/app/recent-files'
 import { toast } from '@/app/shell/ui'
-import { getTabsSnapshot, openFileInNewTab, switchTab } from '@/app/tabs'
+import { getTabsSnapshot, openFileInNewTab, switchTab, type OpenInTabOptions } from '@/app/tabs'
 import { findTabByFileIdentity } from '@/app/tabs/open/identity'
 import { isTauri } from '@/app/tauri/env'
 import { IS_BROWSER } from '@/constants'
@@ -72,7 +72,11 @@ function fileNameFromURL(url: URL): string {
 
 /** Fetches a document over HTTP and opens it in a new tab. Browser builds only. */
 /** Opens the design file at `url` in a new tab, and resolves with that tab's store. */
-export async function openBrowserFileFromURL(url: URL, init?: RequestInit): Promise<EditorStore> {
+export async function openBrowserFileFromURL(
+  url: URL,
+  init?: RequestInit,
+  { onReady }: Pick<OpenInTabOptions, 'onReady'> = {}
+): Promise<EditorStore> {
   // The cap needs a controller of its own, so a caller's signal is combined with it
   // rather than replaced: dropping it would leave the caller unable to cancel.
   const controller = new AbortController()
@@ -89,7 +93,7 @@ export async function openBrowserFileFromURL(url: URL, init?: RequestInit): Prom
   const name = fileNameFromURL(url)
   assertSupportedDesignFile(name)
   const file = new File([bytes], name, { type: 'application/octet-stream' })
-  return openFileInNewTab(file, { path: url.href })
+  return openFileInNewTab(file, { path: url.href, onReady })
 }
 
 function isSupportedDesignFile(fileName: string): boolean {
@@ -141,10 +145,13 @@ export async function chooseTauriOpenPaths(): Promise<string[]> {
 }
 
 /** Opens the design file at `path` on desktop, and resolves with its tab's store. */
-export async function openFileFromPath(path: string): Promise<EditorStore | undefined> {
+export async function openFileFromPath(
+  path: string,
+  { onReady }: Pick<OpenInTabOptions, 'onReady'> = {}
+): Promise<EditorStore | undefined> {
   if (!isTauri()) return undefined
   const file = await readTauriDesignFile(path)
-  const store = await openFileInNewTab(file, { path })
+  const store = await openFileInNewTab(file, { path, onReady })
   rememberRecentFile(path, store.state.documentKind)
   return store
 }

@@ -52,6 +52,13 @@ export interface OpenInTabOptions {
   webPage?: OpenedWebPage
   /** Cancels the open, as the user cancelling it does: the tab it was opening closes. */
   signal?: AbortSignal
+  /**
+   * Runs once the document's first page is in place, so tools can work on it, before the
+   * canvas shows it. A window that is not shown draws no frames, so the open itself settles
+   * only once someone shows it. A file already open or already opening, and an HTML import,
+   * never call this.
+   */
+  onReady?: (store: EditorStore) => void
 }
 
 /**
@@ -60,7 +67,7 @@ export interface OpenInTabOptions {
  */
 export async function openFileInNewTab(
   file: File,
-  { handle, path, webPage, signal }: OpenInTabOptions = {}
+  { handle, path, webPage, signal, onReady }: OpenInTabOptions = {}
 ): Promise<EditorStore> {
   const domImport = webPage !== undefined || isDOMImportFile(file)
   const identity: DocumentSourceIdentity = {
@@ -150,7 +157,8 @@ export async function openFileInNewTab(
         store.setDocumentSource(file.name, sourceFormat, handle, path)
         if (isFig && path) watchOpenedFigCover(path, store)
       },
-      load
+      load,
+      () => onReady?.(store)
     )
     if (isFig && path) refreshOpenedFigCover(path, store)
     completion.resolve(undefined)

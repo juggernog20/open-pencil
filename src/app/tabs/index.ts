@@ -21,7 +21,7 @@ import {
   tabCount
 } from '@/app/tabs/state'
 
-export { openFileInNewTab } from '@/app/tabs/open/file'
+export { openFileInNewTab, type OpenInTabOptions } from '@/app/tabs/open/file'
 export { readFigBytes } from '@/app/tabs/open/fig'
 export {
   discardRecoverySnapshot,
