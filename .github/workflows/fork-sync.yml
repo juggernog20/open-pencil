@@ -68,7 +68,9 @@ jobs:
           if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
           else
-            filter='[.[] | select(.isDraft | not)'
+            # Only versioned tags count. Upstream moves its `nightly` tag to each nightly build of
+            # master, so that release is not a fixed upstream release.
+            filter='[.[] | select(.isDraft | not) | select(.tagName | test("^v[0-9]"))'
             if [ "$TRACK_PRERELEASES" != 'true' ]; then filter="$filter | select(.isPrerelease | not)"; fi
             filter="$filter] | sort_by(.publishedAt) | last | .tagName"
             tag=$(gh release list -R "$UPSTREAM" --limit 30 --json tagName,isDraft,isPrerelease,publishedAt --jq "$filter")

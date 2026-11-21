@@ -27,7 +27,7 @@ Projects pin a `-jn.<n>` tag. They never follow a branch. A project moves to a n
 `.github/workflows/fork-sync.yml` runs every day at 05:17 UTC. You can also start it by hand from the Actions tab.
 
 1. It copies upstream `master` to our `master`.
-2. It finds the newest upstream release. The repository variable `TRACK_PRERELEASES` controls this. With `true`, beta releases count. With `false`, only full releases count.
+2. It finds the newest upstream release. The repository variable `TRACK_PRERELEASES` controls this. With `true`, beta releases count. With `false`, only full releases count. Only tags that start with `v` and a digit count, so the moving `nightly` release never does.
 3. If `patched` already contains that release, it stops.
 4. If not, it merges the release tag into a `sync/<tag>` branch and opens a pull request to `patched`.
 5. If the merge has conflicts, it opens an issue that names the files. Resolve them on a `sync/<tag>` branch by hand, then open the pull request yourself.
