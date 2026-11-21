@@ -60,8 +60,7 @@ git log --no-merges --oneline "$(git describe --tags --abbrev=0 --match 'v*' --e
 | Change | Why we carry it | Upstream pull request |
 | --- | --- | --- |
 | `FORK.md` and the `fork-*` workflows | They run this fork. Upstream does not need them. | Not offered |
-| Backport of upstream #1794, which loads only the sets a page uses and keeps opening files in hidden tabs | The `open_file` fix below builds on it. Remove it at the first upstream release that has it. | [#1794](https://github.com/open-pencil/open-pencil/pull/1794), merged after v0.17.0-beta.2 |
-| `open_file` answers once the first page is in place, and `nextFrame` stops waiting after 250 ms without a frame | On Linux, WebKitGTK says a window behind other windows is visible but draws no frames for it. `open_file` then waited for a frame until the MCP call timed out. The same fix is on branch `fix/open-file-reply-when-ready`, based on upstream `master`. | Not offered yet |
+| `open_file` answers once the first page is in place, and `nextFrame` stops waiting after 250 ms without a frame | On Linux, WebKitGTK says a window behind other windows is visible but draws no frames for it. `open_file` then waited for a frame until the MCP call timed out. The same fix is on branch `fix/open-file-reply-when-ready`, based on upstream `master` before v0.17.0-beta.7. That branch needs the same port before it goes upstream. | Not offered yet |
 
 ## Build from source
 

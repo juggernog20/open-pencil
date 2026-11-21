@@ -1,8 +1,8 @@
 /* eslint-disable max-lines -- font loading and registration share FontManager lifecycle state */
 
-import type { CanvasKit, TypefaceFontProvider } from 'canvaskit-wasm'
 import { uniq } from 'es-toolkit/array'
 
+import type { CanvasKit, TypefaceFontProvider } from '@open-pencil/canvaskit'
 import type { FontVariation, SceneGraph } from '@open-pencil/scene-graph'
 import {
   faceLoadKey,
@@ -10,6 +10,7 @@ import {
   normalizeFontFamily,
   parseFontStyle
 } from '@open-pencil/scene-graph/font-style'
+import { DEADLINE_MS, withDeadline } from '@open-pencil/std/timing'
 
 import { DEFAULT_FONT_FAMILY, IS_BROWSER } from '#core/constants'
 import {
@@ -19,6 +20,7 @@ import {
 } from '#core/text/fallbacks'
 import { BundledFonts, type BundledFontLocator } from '#core/text/font/bundled'
 import { FamilyFaceCatalog, type HostFontFamily } from '#core/text/font/catalog'
+import { makeParagraphBuilder, resetFontCollection } from '#core/text/font/collection'
 import {
   browserFaceDescriptors,
   fontFaceRenderFamily,
@@ -55,6 +57,8 @@ export type { BundledFontLocator } from '#core/text/font/bundled'
 
 export class FontManager {
   private loadedFamilies = new Map<string, ArrayBuffer>()
+  /** The families `loadedFamilies` has a face of, so asking needs no scan of its keys. */
+  private loadedFamilyNames = new Set<string>()
   private loadedFamilySources = new Map<string, FontLoadedSource>()
   private unavailableFaces = new Map<string, FontUnavailableReason>()
   /** Faces a load looked for everywhere and found nowhere, until one of them loads after all. */
@@ -93,10 +97,14 @@ export class FontManager {
   private readonly hostFontRequests = new SharedReads()
   private webFonts = new WebFontResolver()
   private readonly faceListeners = new Set<(family: string, style: string) => void>()
+  private readonly unblockListeners = new Set<
+    (graph: SceneGraph, nodeIds: readonly string[]) => void
+  >()
   private readonly bundled = new BundledFonts()
   private readonly localFonts = new LocalFonts()
   private readonly faces = new FamilyFaceCatalog({
     localFonts: () => this.localFonts.list(),
+    ownLocalFaces: (family) => this.localFonts.ownFamilyFaces(family),
     webFaces: (family) => this.webFonts.familyFaces(family),
     bundledStyles: (family) => this.bundled.styles(family)
   })
@@ -108,6 +116,11 @@ export class FontManager {
     CanvasKit,
     { provider: TypefaceFontProvider; users: number }
   >()
+
+  constructor() {
+    // A local font read that names a family of its own gives the family's faces anew.
+    this.localFonts.onOwnFamiliesChanged(() => this.faces.forget())
+  }
 
   /**
    * The provider every renderer and shaper of `canvasKit` draws from. They share one module's
@@ -133,6 +146,7 @@ export class FontManager {
       if (--shared.users > 0) return
       this.sharedProviders.delete(canvasKit)
       this.detachProvider(provider)
+      resetFontCollection(provider)
       provider.delete()
       return
     }
@@ -195,11 +209,22 @@ export class FontManager {
   unblockNodes(graph: SceneGraph, nodeIds: readonly string[]): void {
     const blocked = this.blockedNodes.get(graph)
     if (!blocked) return
+    const shown: string[] = []
     for (const nodeId of nodeIds) {
       const holds = blocked.get(nodeId) ?? 0
       if (holds > 1) blocked.set(nodeId, holds - 1)
-      else blocked.delete(nodeId)
+      else if (blocked.delete(nodeId)) shown.push(nodeId)
     }
+    if (shown.length > 0) for (const listener of this.unblockListeners) listener(graph, shown)
+  }
+
+  /**
+   * Calls the listener with the layers of `graph` whose last block ended, which the canvas left
+   * out while blocked and draws again now.
+   */
+  onNodesUnblocked(listener: (graph: SceneGraph, nodeIds: readonly string[]) => void): () => void {
+    this.unblockListeners.add(listener)
+    return () => this.unblockListeners.delete(listener)
   }
 
   isNodeBlocked(graph: SceneGraph, nodeId: string): boolean {
@@ -256,6 +281,11 @@ export class FontManager {
     return this.faces.offersFace(family, weight, italic)
   }
 
+  /** The families whose faces `familyFaces` has found so far. */
+  familiesWithFoundFaces(): string[] {
+    return this.faces.foundFamilies()
+  }
+
   /** Calls the listener whenever the faces found so far are forgotten. */
   onFamilyFacesReset(listener: () => void): () => void {
     return this.faces.onReset(listener)
@@ -302,6 +332,22 @@ export class FontManager {
     return fonts
   }
 
+  /**
+   * The family and style the font of a local face read for `family` and `style` names it with,
+   * where the browser lists it under other names; `null` otherwise. Saving these names keeps a
+   * text in the face on every platform and in Figma.
+   */
+  ownFaceName(family: string, style: string): { family: string; style: string } | null {
+    return this.localFonts.ownFace(family, style) ?? null
+  }
+
+  /** Lists the browser's local fonts again; whether the list changed. */
+  async refreshLocalFonts(): Promise<boolean> {
+    const changed = await this.localFonts.refresh()
+    if (changed) this.faces.forget()
+    return changed
+  }
+
   async listFamilies(): Promise<string[]> {
     const options = await this.listFamilyOptions()
     return options.map((option) => option.family)
@@ -322,7 +368,12 @@ export class FontManager {
         if (!byFamily.has(family)) byFamily.set(family, { family, source: provider })
       }
     }
-    for (const font of fonts) byFamily.set(font.family, { family: font.family, source: 'local' })
+    const installed = [
+      ...fonts.map((font) => font.family),
+      ...this.localFonts.ownFamilies(),
+      ...this.faces.hostFamilies()
+    ]
+    for (const family of installed) byFamily.set(family, { family, source: 'local' })
     return [...byFamily.values()].sort((a, b) => a.family.localeCompare(b.family))
   }
 
@@ -404,7 +455,20 @@ export class FontManager {
       )
       const normalized = normalizeFontFamily(family)
       const families = normalized === family ? [family] : [family, normalized]
-      const resolved = await this.webFonts.fetchFont(families, style, requestedCharacters, signal)
+      // A font is a real download, so it gets a transfer's time before it counts as failed. The
+      // deadline's signal goes on only with the caller's: without one, concurrent loads of a face
+      // share one download, which a signal of its own would split.
+      const resolved = await withDeadline(
+        DEADLINE_MS.transfer,
+        (bounded) =>
+          this.webFonts.fetchFont(
+            families,
+            style,
+            requestedCharacters,
+            signal ? bounded : undefined
+          ),
+        signal
+      )
       if (!resolved || resolved.buffers.length === 0) return null
       const primary = resolved.buffers[0]
       // Providers serve faces by weight; a named face comes only from a variable file that has it.
@@ -563,7 +627,7 @@ export class FontManager {
   }
 
   isLoaded(family: string): boolean {
-    return [...this.loadedFamilies.keys()].some((k) => k.startsWith(`${family}|`))
+    return this.loadedFamilyNames.has(family)
   }
 
   isStyleLoaded(family: string, style: string): boolean {
@@ -823,7 +887,7 @@ export class FontManager {
     const style = new canvasKit.ParagraphStyle({
       textStyle: { fontFamilies: [...families], fontSize: 16 }
     })
-    const builder = canvasKit.ParagraphBuilder.MakeFromFontProvider(style, provider)
+    const builder = makeParagraphBuilder(canvasKit, style, provider)
     try {
       builder.addText(characters.join(''))
       const paragraph = builder.build()
@@ -940,6 +1004,7 @@ export class FontManager {
       this.replacedFamilies.add(family)
     }
     this.loadedFamilies.set(key, buffer)
+    this.loadedFamilyNames.add(family)
     if (source) this.loadedFamilySources.set(key, source)
     this.registerFontInCanvasKit(family, buffer)
     if (!pageDrawsByName(source)) this.registerFontInBrowser(family, style, buffer)
@@ -975,6 +1040,7 @@ export class FontManager {
     if (registeredData?.has(data)) return true
     try {
       provider.registerFont(data, family)
+      resetFontCollection(provider)
       const familyRegistrations = registeredData ?? new Set<ArrayBuffer>()
       familyRegistrations.add(data)
       registrations.set(family, familyRegistrations)

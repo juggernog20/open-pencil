@@ -2,7 +2,11 @@ import { isEqual, pick } from 'es-toolkit'
 
 import type { SceneGraph, SceneNode } from '@open-pencil/scene-graph'
 import { computeBounds } from '@open-pencil/scene-graph/geometry'
-import { autoLayoutSizingFields } from '@open-pencil/scene-graph/layout'
+import {
+  autoLayoutSizingFields,
+  includedStrokeWeights,
+  layoutSizingUpdates
+} from '@open-pencil/scene-graph/layout'
 import type { Rect } from '@open-pencil/scene-graph/primitives'
 
 import type { DesignElement } from '../types'
@@ -38,38 +42,55 @@ const SIZE_FIELDS = [
   'counterAxisSizing'
 ] as const satisfies readonly (keyof SceneNode)[]
 
+/** The fields that say how a layer sizes, as opposed to the size it has. */
+const SIZING_MODE_FIELDS = SIZE_FIELDS.filter((field) => field !== 'width' && field !== 'height')
+
 const PAGE_ORIGIN: Rect = { x: 0, y: 0, width: 0, height: 0 }
 
 /** The element's own box, when its layout was recorded, and the extent of its words. */
 export function capturedBox(element: DesignElement): CapturedBox | undefined {
   const layout = element.layout
   if (!layout) return undefined
-  const lines = layout.lines ?? []
+  // An inline element's text runs along its fragments, one on each line it spans.
+  const lines = layout.lines ?? layout.fragments ?? []
   return lines.length > 0
     ? { box: layout.box, lines: lines.length, extent: computeBounds(lines) }
     : { box: layout.box }
 }
 
 /**
- * The box of the text an element holds: its content box, inside its padding and borders, where
- * CSS stacks its line boxes. The words take less when they do not fill a line, as a layer that
- * fills its parent's width is wider than its words.
+ * The box of the text an element holds: across, its content box, inside its padding and
+ * borders, which its lines wrap to; down, the lines themselves, which start lower than the
+ * content box when the element aligns its content, as a table cell does by `vertical-align`.
+ * The words take less when they do not fill a line, as a layer that fills its parent's width
+ * is wider than its words.
  */
 export function capturedTextBox(element: DesignElement): CapturedBox | undefined {
   const layout = element.layout
   if (!layout?.lines || layout.lines.length === 0) return undefined
   const insets = contentInsets(mergedStyle(element))
-  const { x, y, width, height } = layout.box
+  const extent = computeBounds(layout.lines)
   return {
     box: {
-      x: x + insets.left,
-      y: y + insets.top,
-      width: width - insets.left - insets.right,
-      height: height - insets.top - insets.bottom
+      x: layout.box.x + insets.left,
+      y: extent.y,
+      width: layout.box.width - insets.left - insets.right,
+      height: extent.height
     },
     lines: layout.lines.length,
-    extent: computeBounds(layout.lines)
+    extent
   }
+}
+
+/**
+ * The box a run of text that is a flex or grid item of its own was laid out in: the extent of its
+ * container's lines, which are that run's alone.
+ */
+export function capturedLinesBox(element: DesignElement): CapturedBox | undefined {
+  const lines = element.layout?.lines
+  if (!lines || lines.length === 0) return undefined
+  const extent = computeBounds(lines)
+  return { box: extent, lines: lines.length, extent }
 }
 
 /** Text the page set on one line, which keeps to one line and measures its own width. */
@@ -79,10 +100,21 @@ function isSingleLine(node: SceneNode, captured: CapturedBox): boolean {
 
 /**
  * Prepares a text layer for its captured lines: text the page set on one line sizes to its
- * words, so a fallback font a little wider than the page's does not wrap it.
+ * words, so a fallback font a little wider than the page's does not wrap it. It hugs them on
+ * both axes, opting out of a stretch its parent gives its children, rather than filling its
+ * parent, which would make it wrapping text of the parent's width again.
  */
-export function applyCapturedLines(node: SceneNode, captured: CapturedBox): void {
-  if (isSingleLine(node, captured)) node.textAutoResize = 'WIDTH_AND_HEIGHT'
+export function applyCapturedLines(
+  graph: SceneGraph,
+  node: SceneNode,
+  captured: CapturedBox
+): void {
+  if (!isSingleLine(node, captured)) return
+  for (const axis of ['HORIZONTAL', 'VERTICAL'] as const) {
+    Object.assign(node, layoutSizingUpdates(graph, node, axis, 'HUG'))
+  }
+  // Each axis's update reads the other's sizing as it was, so the text's own resizing is set last.
+  node.textAutoResize = 'WIDTH_AND_HEIGHT'
 }
 
 function offset(rect: Rect, origin: Rect): Rect {
@@ -120,8 +152,9 @@ function matches(node: SceneNode, captured: CapturedBox, origin: Rect): boolean 
   return near(node.x, rect.x) && sizeMatches(node, captured)
 }
 
-function hasAutoLayout(node: SceneNode): boolean {
-  return node.layoutMode !== 'NONE' && node.layoutMode !== 'GRID'
+/** Whether a layer lays its children out, as a stack or a grid, rather than holding them where they are. */
+function laysOutChildren(node: SceneNode): boolean {
+  return node.layoutMode !== 'NONE'
 }
 
 /** Gives a layer the size it was captured at, and returns whether that changed it. */
@@ -174,29 +207,122 @@ function placeChildren(graph: SceneGraph, node: SceneNode, own: CapturedBox, box
   }
 }
 
+type PaddingField = 'paddingTop' | 'paddingRight' | 'paddingBottom' | 'paddingLeft'
+
+/**
+ * The stacks each import has spaced as the page did, so each is spaced once and placed after.
+ * Kept per import by its captured boxes.
+ */
+const respacedLayers = new WeakMap<CapturedBoxes, Set<string>>()
+
+/**
+ * Spaces a stack's children as the page did, where their margins, collapsed or negative, left
+ * the same gap between each two: that gap is its spacing, the room before the first its start
+ * padding, and, when it hugs its children, the room after the last its end padding. Returns
+ * whether that changed it. A stack that wraps, aligns its children other than at the start, or
+ * runs right to left keeps its spacing, and placement puts its children.
+ */
+function respace(graph: SceneGraph, node: SceneNode, own: CapturedBox, boxes: CapturedBoxes) {
+  const mode = node.layoutMode
+  if (mode !== 'HORIZONTAL' && mode !== 'VERTICAL') return false
+  if (node.layoutWrap === 'WRAP' || node.primaryAxisAlign !== 'MIN') return false
+  if (node.layoutDirection === 'RTL') return false
+  const horizontal = mode === 'HORIZONTAL'
+  const spans: [number, number][] = []
+  for (const child of graph.getChildren(node.id)) {
+    if (!child.visible || child.layoutPositioning === 'ABSOLUTE') continue
+    const captured = boxes.get(child.id)
+    if (!captured) return false
+    const rect = offset(captured.box, own.box)
+    spans.push(horizontal ? [rect.x, rect.x + rect.width] : [rect.y, rect.y + rect.height])
+  }
+  const first = spans.at(0)
+  const last = spans.at(-1)
+  if (!first || !last) return false
+  const gaps = spans.slice(1).map(([start], index) => start - spans[index][1])
+  const gap = gaps.at(0) ?? node.itemSpacing
+  if (gaps.some((each) => !near(each, gap))) return false
+  const [start, end]: [PaddingField, PaddingField] = horizontal
+    ? ['paddingLeft', 'paddingRight']
+    : ['paddingTop', 'paddingBottom']
+  const fields = ['itemSpacing', start, end] as const
+  const before = pick(node, fields)
+  node.itemSpacing = gap
+  const stroke = includedStrokeWeights(node)
+  node[start] = first[0] - (horizontal ? stroke.left : stroke.top)
+  if (node.primaryAxisSizing === 'HUG') {
+    const size = horizontal ? own.box.width : own.box.height
+    node[end] = size - last[1] - (horizontal ? stroke.right : stroke.bottom)
+  }
+  return !isEqual(pick(node, fields), before)
+}
+
+/**
+ * The layers each import has corrected the size of without changing how they size, so a second
+ * such correction is known to be layout imposing the size: a parent sizing its child, which
+ * placing the parent's children settles. Kept per import by its captured boxes.
+ */
+const resizedLayers = new WeakMap<CapturedBoxes, Set<string>>()
+
 /**
  * Compares laid-out layers with where the page laid their elements out, and keeps auto layout
  * only where it reproduces them: a layer of the wrong size takes its captured size, and a
- * container whose children land elsewhere places them at their captured boxes instead. Returns
+ * container whose children land elsewhere places them at their captured boxes instead. Sizes come
+ * first: a child a little too large moves the siblings after it, and fixing its size keeps its
+ * parent's auto layout, so children are placed only once no layer changes how it sizes. Returns
  * how many layers changed, so the caller lays out again until none do.
  */
 export function placeLayersFromLayout(graph: SceneGraph, boxes: CapturedBoxes): number {
+  const layers = graph
+    .getPages()
+    .flatMap((page) => graph.flattenTree(page.id).map(({ node }) => node))
+    .filter((node) => node.type !== 'CANVAS' && boxes.has(node.id))
+  const resizedBefore = resizedLayers.get(boxes) ?? new Set<string>()
+  resizedLayers.set(boxes, resizedBefore)
+  const imposed = new Set<string>()
   let changed = 0
-  for (const page of graph.getPages()) {
-    for (const { node } of graph.flattenTree(page.id)) {
-      const own = boxes.get(node.id)
-      if (!own || node.type === 'CANVAS') continue
-      if (!sizeMatches(node, own) && fixSize(node, own)) changed++
-      if (!hasAutoLayout(node)) continue
-      const misplaced = graph.getChildren(node.id).some((child) => {
-        const captured = boxes.get(child.id)
-        return captured !== undefined && !matches(child, captured, own.box)
-      })
-      if (misplaced) {
-        placeChildren(graph, node, own, boxes)
-        changed++
+  let resized = 0
+  for (const node of layers) {
+    const own = boxes.get(node.id)
+    if (!own || sizeMatches(node, own)) continue
+    const sizing = pick(node, SIZING_MODE_FIELDS)
+    const changedSize = fixSize(node, own)
+    if (!isEqual(pick(node, SIZING_MODE_FIELDS), sizing)) {
+      // A layer that sized itself stops doing so.
+      changed++
+    } else if (changedSize) {
+      // Laid out once more at its corrected size, as wrapped text measures its height at a new
+      // width; corrected again, its parent imposes the size, and places it below instead.
+      if (resizedBefore.has(node.id)) {
+        imposed.add(node.id)
+      } else {
+        resizedBefore.add(node.id)
+        resized++
       }
     }
+  }
+  // Children are placed only once layout has run at the corrected sizes.
+  if (changed + resized > 0) return changed + resized
+  const respaced = respacedLayers.get(boxes) ?? new Set<string>()
+  respacedLayers.set(boxes, respaced)
+  for (const node of layers) {
+    const own = boxes.get(node.id)
+    if (!own || !laysOutChildren(node)) continue
+    const misplaced = graph.getChildren(node.id).some((child) => {
+      const captured = boxes.get(child.id)
+      return captured !== undefined && (imposed.has(child.id) || !matches(child, captured, own.box))
+    })
+    if (!misplaced) continue
+    // A stack spaced as the page did is laid out again before its children are placed.
+    if (!respaced.has(node.id)) {
+      respaced.add(node.id)
+      if (respace(graph, node, own, boxes)) {
+        changed++
+        continue
+      }
+    }
+    placeChildren(graph, node, own, boxes)
+    changed++
   }
   return changed
 }

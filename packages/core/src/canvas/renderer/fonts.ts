@@ -1,18 +1,19 @@
-import type { Font, TypefaceFontProvider } from 'canvaskit-wasm'
 import { uniqBy } from 'es-toolkit'
 
+import type { Font, TypefaceFontProvider } from '@open-pencil/canvaskit'
 import type { SceneGraph, SceneNode } from '@open-pencil/scene-graph'
 import { CONNECTOR_LABEL_FONT } from '@open-pencil/scene-graph/connectors'
 import { FIGJAM_TYPEFACES } from '@open-pencil/scene-graph/figjam'
 import { faceLoadKey } from '@open-pencil/scene-graph/font-style'
 import { STICKY_FONT_FAMILY, STICKY_FONT_WEIGHT } from '@open-pencil/scene-graph/generated'
 
-import type { SkiaRenderer } from '#core/canvas/renderer'
+import type { SkiaRenderer } from '#core/canvas/renderer/skia'
 import type { NodeFontReadiness } from '#core/canvas/text'
 import {
   COMPONENT_LABEL_FONT_SIZE,
   DEFAULT_FONT_FAMILY,
   DEFAULT_FONT_SIZE,
+  HUD_FONT_SIZE,
   LABEL_FONT_SIZE,
   SECTION_TITLE_FONT_FAMILY,
   SECTION_TITLE_FONT_SIZE,
@@ -22,6 +23,7 @@ import {
 } from '#core/constants'
 import { withTextMeasurer } from '#core/layout/text-measurement'
 import { EMOJI_METRICS_FAMILY } from '#core/text/emoji'
+import { resetFontCollection } from '#core/text/font/collection'
 import { fontManager } from '#core/text/font/manager'
 import { prepareGraphFonts } from '#core/text/prepare'
 import {
@@ -41,6 +43,8 @@ export interface ChromeFonts {
   value: Font | null
   sectionTitle: Font | null
   componentLabel: Font | null
+  /** The profiler HUD's text, which the profiler borrows. */
+  hud: Font | null
 }
 
 export function createChromeFonts(): ChromeFonts {
@@ -50,7 +54,8 @@ export function createChromeFonts(): ChromeFonts {
     size: null,
     value: null,
     sectionTitle: null,
-    componentLabel: null
+    componentLabel: null,
+    hud: null
   }
 }
 
@@ -92,7 +97,11 @@ export function resolveLabelFontCoverage(
 }
 
 export function syncFontGeneration(r: SkiaRenderer): void {
-  r.fontGeneration = fontManager.generation()
+  const generation = fontManager.generation()
+  if (generation !== r.fontGeneration) {
+    r.renderedBounds.clear()
+  }
+  r.fontGeneration = generation
 }
 
 export function trackFontDemand(r: SkiaRenderer, node: SceneNode, key: string): void {
@@ -135,7 +144,7 @@ function settleFontDemand(
       if (pending.keys.size === 0) r.textFonts.pending.delete(nodeId)
     }
     r.textFonts.pictureGenerations.delete(nodeId)
-    r.invalidateNodePicture(nodeId)
+    r.redrawNode(nodeId)
   }
 }
 
@@ -155,6 +164,7 @@ function registerSectionTitleFont(r: SkiaRenderer, data: ArrayBuffer) {
   if (provider && !sectionTitleProviders.has(provider)) {
     sectionTitleProviders.add(provider)
     provider.registerFont(data, SECTION_TITLE_FONT_FAMILY)
+    resetFontCollection(provider)
     fontManager.registerFontInBrowser(SECTION_TITLE_FONT_FAMILY, 'SemiBold', data)
   }
   const typeface = r.ck.Typeface.MakeFreeTypeFaceFromData(data)
@@ -209,17 +219,24 @@ export async function loadFonts(
   if (fontData) {
     const typeface = r.ck.Typeface.MakeFreeTypeFaceFromData(fontData)
     if (typeface) {
-      r.chromeFonts.text?.delete()
-      r.chromeFonts.label?.delete()
-      r.chromeFonts.size?.delete()
-      r.chromeFonts.sectionTitle?.delete()
-      r.chromeFonts.componentLabel?.delete()
-      r.chromeFonts.text = new r.ck.Font(typeface, DEFAULT_FONT_SIZE)
-      r.chromeFonts.label = new r.ck.Font(typeface, LABEL_FONT_SIZE)
-      r.chromeFonts.size = new r.ck.Font(typeface, SIZE_FONT_SIZE)
-      r.chromeFonts.sectionTitle = new r.ck.Font(typeface, SECTION_TITLE_FONT_SIZE)
-      r.chromeFonts.componentLabel = new r.ck.Font(typeface, COMPONENT_LABEL_FONT_SIZE)
-      r.profiler.setTypeface(typeface)
+      try {
+        r.chromeFonts.text?.delete()
+        r.chromeFonts.label?.delete()
+        r.chromeFonts.size?.delete()
+        r.chromeFonts.sectionTitle?.delete()
+        r.chromeFonts.componentLabel?.delete()
+        r.chromeFonts.hud?.delete()
+        r.chromeFonts.text = new r.ck.Font(typeface, DEFAULT_FONT_SIZE)
+        r.chromeFonts.label = new r.ck.Font(typeface, LABEL_FONT_SIZE)
+        r.chromeFonts.size = new r.ck.Font(typeface, SIZE_FONT_SIZE)
+        r.chromeFonts.sectionTitle = new r.ck.Font(typeface, SECTION_TITLE_FONT_SIZE)
+        r.chromeFonts.componentLabel = new r.ck.Font(typeface, COMPONENT_LABEL_FONT_SIZE)
+        r.chromeFonts.hud = new r.ck.Font(typeface, HUD_FONT_SIZE)
+        r.profiler.setFont(r.chromeFonts.hud)
+      } finally {
+        // The fonts hold their own references to the face.
+        typeface.delete()
+      }
     }
   }
 

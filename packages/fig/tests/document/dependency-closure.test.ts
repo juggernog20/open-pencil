@@ -1,11 +1,11 @@
 import { expect, test } from 'bun:test'
 
-import { guid } from '#fig-tests/helpers/guid'
 import { collectSceneDependencies } from '#fig/document/dependency-closure'
 import { createSourceIndex } from '#fig/instance-overrides/source-index'
 
 import { materializeDocument } from '@open-pencil/fig'
 import type { NodeChange } from '@open-pencil/kiwi/fig/codec'
+import { guid } from '@open-pencil/test-support/fig/guid'
 
 test('retains external preferred choices separately from required component dependencies', () => {
   const changes = [
@@ -151,4 +151,37 @@ test('includes the other variants of a set its record types as one', () => {
   ] as NodeChange[]
   const result = collectSceneDependencies(changes, new Set(['1:1']), createSourceIndex(changes))
   expect(result.contentIds.has('1:5')).toBe(true)
+})
+
+test('reads a root record with what it needs, and none of its siblings', () => {
+  const changes = [
+    { guid: guid(1), type: 'DOCUMENT' },
+    { guid: guid(2), type: 'CANVAS', parentIndex: { guid: guid(1), position: '!' } },
+    {
+      guid: guid(3),
+      type: 'CANVAS',
+      internalOnly: true,
+      parentIndex: { guid: guid(1), position: '"' }
+    },
+    {
+      guid: guid(4),
+      type: 'FRAME',
+      componentPropDefs: [{ id: guid(90), type: 'VARIANT', name: 'State' }],
+      parentIndex: { guid: guid(3), position: '!' }
+    },
+    { guid: guid(5), type: 'SYMBOL', parentIndex: { guid: guid(4), position: '!' } },
+    { guid: guid(6), type: 'SYMBOL', parentIndex: { guid: guid(4), position: '"' } },
+    { guid: guid(7), type: 'SYMBOL', parentIndex: { guid: guid(3), position: '"' } },
+    {
+      guid: guid(8),
+      type: 'INSTANCE',
+      parentIndex: { guid: guid(6), position: '!' },
+      symbolData: { symbolID: guid(7) }
+    }
+  ] as NodeChange[]
+  const index = createSourceIndex(changes)
+  const result = collectSceneDependencies(changes, new Set(), index, undefined, ['1:6'])
+  expect([...result.contentIds].toSorted()).toEqual(['1:6', '1:7', '1:8'])
+  expect(result.ancestorIds.has('1:4')).toBe(true)
+  expect(result.contentIds.has('1:5')).toBe(false)
 })

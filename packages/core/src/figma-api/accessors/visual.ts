@@ -1,18 +1,34 @@
-import type { SceneGraph, SceneNode, Stroke } from '@open-pencil/scene-graph'
+import * as v from 'valibot'
+
+import type { SceneNode, Stroke } from '@open-pencil/scene-graph'
 import { newStrokeGeometry } from '@open-pencil/scene-graph/node-defaults'
-import { independentCornerChanges, resolvedPaintBindings } from '@open-pencil/scene-graph/variables'
+import { independentCornerChanges } from '@open-pencil/scene-graph/variables'
 import { regionFillsDiffer } from '@open-pencil/scene-graph/vector-network'
 
 import {
-  graph,
+  fieldAccessor,
   raw,
   strokeOwner,
   updateNode,
   type NodeProxyInternals,
   type ProxyThis
-} from '#core/figma-api/accessor-utils'
-import { parseFigmaEffects, toFigmaEffect, type FigmaEffect } from '#core/figma-api/effects'
-import { parseFigmaPaints, toFigmaPaint, type FigmaPaint } from '#core/figma-api/paints'
+} from '#core/figma-api/accessors/utils'
+import {
+  BLEND_MODES,
+  fillsGainingGlass,
+  parseFigmaEffects,
+  toFigmaEffect,
+  firstTextureOnly,
+  type FigmaEffect
+} from '#core/figma-api/effects'
+import { graphOf } from '#core/figma-api/graph'
+import {
+  parseFigmaPaints,
+  toFigmaPaint,
+  withVideoPosters,
+  type FigmaPaint
+} from '#core/figma-api/paints'
+import { finiteNumber } from '#core/figma-api/schema'
 import { getTextStyle } from '#core/figma-api/text/style'
 import {
   effectBindings,
@@ -20,27 +36,22 @@ import {
   setEffectBindings,
   setPaintBindings
 } from '#core/figma-api/variables/bindings'
-import { textStyleChanges } from '#core/text/character-style'
+import { textStyleChanges } from '#core/text/character/style'
 
 /**
- * `node`'s fills as Figma's plugin API reads them, bound colours resolved and carrying the
- * variable they are bound to.
+ * `node`'s fills as Figma's plugin API reads them, each carrying the variable it is bound to. A
+ * bound paint reads as it stores its color and opacity, which its variable writes into it when it
+ * binds and whenever the color it gives the layer changes, as in Figma.
  */
-export function figmaFills(sceneGraph: SceneGraph, node: SceneNode): FigmaPaint[] {
+export function figmaFills(node: SceneNode): FigmaPaint[] {
   const bound = paintBindings(node, 'fills')
-  const fills = bound.size
-    ? (resolvedPaintBindings(sceneGraph, node).fills ?? node.fills)
-    : node.fills
-  return fills.map((fill, index) => toFigmaPaint(fill, bound.get(index)))
+  return node.fills.map((fill, index) => toFigmaPaint(fill, bound.get(index)))
 }
 
 /** `node`'s strokes as Figma's plugin API reads them, as {@link figmaFills} reads fills. */
-export function figmaStrokes(sceneGraph: SceneGraph, node: SceneNode): FigmaPaint[] {
+export function figmaStrokes(node: SceneNode): FigmaPaint[] {
   const bound = paintBindings(node, 'strokes')
-  const strokes = bound.size
-    ? (resolvedPaintBindings(sceneGraph, node).strokes ?? node.strokes)
-    : node.strokes
-  return strokes.map((stroke, index) => toFigmaPaint(stroke, bound.get(index)))
+  return node.strokes.map((stroke, index) => toFigmaPaint(stroke, bound.get(index)))
 }
 
 /**
@@ -60,13 +71,13 @@ function setFills(
   method: string
 ): void {
   const node = raw(target, internals)
-  const fills = parseFigmaPaints(value, method)
+  const fills = withVideoPosters(parseFigmaPaints(value, method), graphOf(target), node.fills)
   updateNode(
     target,
     internals,
     node.type === 'TEXT' ? textStyleChanges(node, { fills }) : { fills }
   )
-  setPaintBindings(graph(target, internals), raw(target, internals), 'fills', value)
+  setPaintBindings(graphOf(target), raw(target, internals), 'fills', value)
 }
 
 /** Figma paints carry no geometry; a stroke takes the weight, alignment, and dashes the node keeps. */
@@ -78,8 +89,13 @@ function setStrokes(
 ): void {
   const owner = strokeOwner(target, internals)
   const geometry = newStrokeGeometry(raw(owner, internals))
-  const { dashPattern } = raw(owner, internals)
-  const strokes = parseFigmaPaints(value, method, 'strokes').map((paint): Stroke => ({
+  const { dashPattern, strokes: previous } = raw(owner, internals)
+  const parsed = withVideoPosters(
+    parseFigmaPaints(value, method, 'strokes'),
+    graphOf(target),
+    previous
+  )
+  const strokes = parsed.map((paint): Stroke => ({
     ...paint,
     weight: geometry.weight,
     align: geometry.align,
@@ -91,7 +107,7 @@ function setStrokes(
     strokeAlign: geometry.align
   })
   updateNode(owner, internals, { strokes, strokeWeight: kept.weight, strokeAlign: kept.align })
-  setPaintBindings(graph(target, internals), raw(owner, internals), 'strokes', value)
+  setPaintBindings(graphOf(target), raw(owner, internals), 'strokes', value)
 }
 
 export function installVisualNodeProxyAccessors(
@@ -105,13 +121,10 @@ export function installVisualNodeProxyAccessors(
       // regions are; setting it fills them all.
       get(this: ProxyThis): readonly FigmaPaint[] | symbol {
         const node = raw(this, internals)
-        const sceneGraph = graph(this, internals)
-        if (node.type === 'VECTOR') {
-          // A region without paints of its own draws the layer's, its bound colors resolved.
-          const layer = resolvedPaintBindings(sceneGraph, node).fills ?? node.fills
-          if (regionFillsDiffer(node.vectorNetwork, layer)) return mixed
-        }
-        if (node.type !== 'TEXT') return Object.freeze(figmaFills(sceneGraph, node))
+        // A region without paints of its own draws the layer's.
+        if (node.type === 'VECTOR' && regionFillsDiffer(node.vectorNetwork, node.fills))
+          return mixed
+        if (node.type !== 'TEXT') return Object.freeze(figmaFills(node))
         const fills = getTextStyle(node, 'fills', mixed)
         // Text styles read for scripts already give Figma's paints.
         return typeof fills === 'symbol' ? fills : Object.freeze(fills as FigmaPaint[])
@@ -123,7 +136,7 @@ export function installVisualNodeProxyAccessors(
     strokes: {
       get(this: ProxyThis): readonly FigmaPaint[] {
         const owner = raw(strokeOwner(this, internals), internals)
-        return Object.freeze(figmaStrokes(graph(this, internals), owner))
+        return Object.freeze(figmaStrokes(owner))
       },
       set(this: ProxyThis, value: readonly FigmaPaint[]) {
         setStrokes(this, internals, value, 'set_strokes')
@@ -148,8 +161,11 @@ export function installVisualNodeProxyAccessors(
         return Object.freeze(figmaEffects(raw(this, internals)))
       },
       set(this: ProxyThis, value: readonly FigmaEffect[]) {
-        updateNode(this, internals, { effects: parseFigmaEffects(value) })
-        setEffectBindings(graph(this, internals), raw(this, internals), value)
+        const node = raw(this, internals)
+        const effects = parseFigmaEffects(value)
+        const fills = fillsGainingGlass(node.effects, effects, node.fills)
+        updateNode(this, internals, fills ? { effects, fills } : { effects })
+        setEffectBindings(graphOf(this), raw(this, internals), firstTextureOnly(value))
       }
     },
     // Applied shared styles, as Figma exposes them; an assignment inside an instance is an override.
@@ -157,42 +173,14 @@ export function installVisualNodeProxyAccessors(
       get(this: ProxyThis): number {
         return raw(this, internals).opacity
       },
-      set(this: ProxyThis, value: number) {
-        updateNode(this, internals, { opacity: value })
+      set(this: ProxyThis, value: unknown) {
+        updateNode(this, internals, { opacity: finiteNumber(value, 'opacity') })
       }
     },
-    visible: {
-      get(this: ProxyThis): boolean {
-        return raw(this, internals).visible
-      },
-      set(this: ProxyThis, value: boolean) {
-        updateNode(this, internals, { visible: value })
-      }
-    },
-    locked: {
-      get(this: ProxyThis): boolean {
-        return raw(this, internals).locked
-      },
-      set(this: ProxyThis, value: boolean) {
-        updateNode(this, internals, { locked: value })
-      }
-    },
-    blendMode: {
-      get(this: ProxyThis): string {
-        return raw(this, internals).blendMode
-      },
-      set(this: ProxyThis, value: string) {
-        updateNode(this, internals, { blendMode: value as SceneNode['blendMode'] })
-      }
-    },
-    clipsContent: {
-      get(this: ProxyThis): boolean {
-        return raw(this, internals).clipsContent
-      },
-      set(this: ProxyThis, value: boolean) {
-        updateNode(this, internals, { clipsContent: value })
-      }
-    },
+    visible: fieldAccessor(internals, 'visible', v.boolean()),
+    locked: fieldAccessor(internals, 'locked', v.boolean()),
+    blendMode: fieldAccessor(internals, 'blendMode', v.picklist(BLEND_MODES)),
+    clipsContent: fieldAccessor(internals, 'clipsContent', v.boolean()),
     cornerRadius: {
       get(this: ProxyThis): number | symbol {
         const node = raw(this, internals)
@@ -206,12 +194,13 @@ export function installVisualNodeProxyAccessors(
       },
       set(this: ProxyThis, value: number | symbol) {
         if (value === mixed) return
+        const radius = finiteNumber(value, 'cornerRadius')
         updateNode(this, internals, {
-          cornerRadius: value as number,
-          topLeftRadius: value as number,
-          topRightRadius: value as number,
-          bottomRightRadius: value as number,
-          bottomLeftRadius: value as number,
+          cornerRadius: radius,
+          topLeftRadius: radius,
+          topRightRadius: radius,
+          bottomRightRadius: radius,
+          bottomLeftRadius: radius,
           independentCorners: false
         })
       }
@@ -224,8 +213,8 @@ export function installVisualNodeProxyAccessors(
       get(this: ProxyThis): number {
         return raw(this, internals).cornerSmoothing
       },
-      set(this: ProxyThis, value: number) {
-        updateNode(this, internals, { cornerSmoothing: value })
+      set(this: ProxyThis, value: unknown) {
+        updateNode(this, internals, { cornerSmoothing: finiteNumber(value, 'cornerSmoothing') })
       }
     }
   })
@@ -239,10 +228,11 @@ function cornerAccessor(
     get(this: ProxyThis): number {
       return raw(this, internals)[field]
     },
-    set(this: ProxyThis, value: number) {
+    set(this: ProxyThis, value: unknown) {
+      const radius = finiteNumber(value, field)
       updateNode(this, internals, {
         ...independentCornerChanges(raw(this, internals)),
-        [field]: value
+        [field]: radius
       })
     }
   }

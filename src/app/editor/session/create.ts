@@ -3,6 +3,8 @@ import { shallowReactive } from 'vue'
 import { createEditor } from '@open-pencil/core'
 import { BUILTIN_IO_FORMATS, IORegistry } from '@open-pencil/core/io'
 import { SceneGraph } from '@open-pencil/scene-graph'
+import { createDeferred } from '@open-pencil/std/async'
+import { errorMessage } from '@open-pencil/std/errors'
 import { createShaderRasterizer } from '@open-pencil/vue/canvas/surface'
 
 import { useCollabIdentity } from '@/app/collab/identity'
@@ -37,9 +39,8 @@ import {
   type AppSwitchPageOptions
 } from '@/app/editor/session/types'
 import { notificationMessages } from '@/app/i18n/notifications'
-import { createDeferred } from '@/app/runtime/deferred'
 import { toast } from '@/app/shell/ui'
-import { IS_BROWSER, IS_TAURI } from '@/constants'
+import { IS_TAURI } from '@/constants'
 
 export { EDITOR_TOOLS as TOOLS, TOOL_SHORTCUTS } from '@open-pencil/core'
 export type { EditorToolDef as ToolDef, Tool } from '@open-pencil/core'
@@ -49,7 +50,6 @@ function buildEditorStore(initialGraph?: SceneGraph) {
 
   const state = shallowReactive<AppEditorState>(createInitialAppEditorState(graph.getPages()[0].id))
 
-  const viewportSize = { width: 0, height: 0 }
   const editor = createEditor({
     graph,
     state,
@@ -58,14 +58,7 @@ function buildEditorStore(initialGraph?: SceneGraph) {
     shaderRasterizer: createShaderRasterizer(),
     resolveFigmaClipboardImages: IS_TAURI ? resolveFigmaClipboardImages : undefined,
     skipInitialGraphSetup: !!initialGraph,
-    getUserName: () => useCollabIdentity().name.value,
-    getViewportSize: () =>
-      viewportSize.width > 0 && viewportSize.height > 0
-        ? viewportSize
-        : {
-            width: IS_BROWSER ? window.innerWidth : 1920,
-            height: IS_BROWSER ? window.innerHeight : 1080
-          }
+    getUserName: () => useCollabIdentity().name.value
   })
   const canvasReadiness = createDeferred<undefined>()
   const io = new IORegistry(BUILTIN_IO_FORMATS)
@@ -140,7 +133,7 @@ function buildEditorStore(initialGraph?: SceneGraph) {
   const preparationController = createEditorPreparationController(state, preparationEvents, {
     editor
   })
-  const modules = createEditorStoreModules(editor, state, io, viewportSize, preparationController)
+  const modules = createEditorStoreModules(editor, state, io, preparationController)
 
   // ─── Public API ───────────────────────────────────────────────
   // Spread all core Editor methods, then override getters and add app-specific.
@@ -175,7 +168,16 @@ function buildEditorStore(initialGraph?: SceneGraph) {
         preparation.update({ phase: 'preparing-render', detail: page?.name ?? null })
         await options.beforePresentation?.()
         preparation.signal.throwIfAborted()
-        await preparationController.waitForPresentation(preparation.id, editor.state)
+        try {
+          await preparationController.waitForPresentation(preparation.id, editor.state)
+        } catch (error) {
+          preparation.signal.throwIfAborted()
+          // The page is in by now: a canvas that cannot show it fails the render, not the
+          // switch, so an open that waits on it keeps its document.
+          preparation.fail({ code: 'render-failed', message: errorMessage(error), retryable: true })
+          toast.error(notificationMessages.get().operationFailed({ error: errorMessage(error) }))
+          return
+        }
         preparation.signal.throwIfAborted()
       }
       succeeded = true
@@ -187,20 +189,7 @@ function buildEditorStore(initialGraph?: SceneGraph) {
         throw error
       }
       if (ownsPreparation) {
-        const presentationTimedOut =
-          error instanceof Error && error.message === 'The operation was timed out'
-        preparation.fail({
-          code: presentationTimedOut ? 'render-failed' : 'layout-failed',
-          message: error instanceof Error ? error.message : String(error),
-          retryable: true
-        })
-        if (presentationTimedOut) {
-          toast.error(
-            notificationMessages.get().operationFailed({
-              error: error instanceof Error ? error.message : String(error)
-            })
-          )
-        }
+        preparation.fail({ code: 'layout-failed', message: errorMessage(error), retryable: true })
       }
       throw error
     } finally {
@@ -228,6 +217,7 @@ function buildEditorStore(initialGraph?: SceneGraph) {
     activePaneId: panes.activePaneId,
     visiblePaneCount: panes.visiblePaneCount,
     getPaneRenderState: panes.getPaneRenderState,
+    getPaneView: panes.getPaneView,
     setActivePane: panes.setActivePane,
     switchPage,
     recentPages: recentPages.ids,

@@ -5,7 +5,9 @@ import {
   restoreOwnedSlotContent,
   type ParkedSlotContent
 } from '../slots/frames'
+import { changesMoreThanStrokeLines } from '../strokes'
 import type { SceneNode } from '../types'
+import { applyBoundPaintColorsIn, keepCopyBoundPaints } from '../variables/paints'
 import { keepOwnContentSize } from './content-size'
 import { createInstanceSyncContext, groupCopyRemovals, removeLeftoverCopies } from './copies'
 import { canCreateInstance } from './cycles'
@@ -13,19 +15,24 @@ import { INSTANCE_OVERRIDE_FIELDS, INSTANCE_SYNC_PROPS } from './fields'
 import { findInstanceAncestor, instanceMainComponent } from './main-component'
 import {
   clearInstanceOverrides,
+  cloneInstanceOverrideState,
   getInstanceOverride,
   hasInstanceOverride as hasNodeInstanceOverride,
   setInstanceOverride
 } from './overrides'
-import { followComponentLayers } from './swap'
 import {
   bindingProtection,
-  cloneChildrenWithMapping,
-  copyProp,
   enclosingInstanceOverrideFields,
   isProtectedSyncField,
+  syncBindingFields
+} from './protection'
+import { walkInstanceSources } from './source-walk'
+import { followComponentLayers } from './swap'
+import {
+  applySyncedStrokeLines,
+  cloneChildrenWithMapping,
+  copyProp,
   sourceInTargetCoordinates,
-  syncBindingFields,
   syncChildren,
   updateSyncedProps
 } from './sync'
@@ -65,6 +72,8 @@ export function createInstance(
   const instance = graph.createNode('INSTANCE', parentId, { ...props, ...overrides, componentId })
 
   cloneChildrenWithMapping(graph, component.id, instance.id)
+  // A copy shows its bound paints in its own context, not as its component's paints hold them.
+  applyBoundPaintColorsIn(graph, instance.id)
 
   return instance
 }
@@ -144,14 +153,14 @@ export function swapInstanceComponent(
   const previousComponent = namedAfter(graph, instance, component)
   recordNestedSwap(graph, instance, componentId)
   const source = sourceInTargetCoordinates(component, instance.componentScale)
-  const updates: Partial<SceneNode> = {
-    componentId,
-    ...ownSyncedProps(graph, instance, source).updates
-  }
+  const own = ownSyncedProps(graph, instance, source)
+  const updates: Partial<SceneNode> = { componentId, ...own.updates }
 
   if (!keepName && (!previousComponent || instance.name === previousComponent.name))
     updates.name = component.name
 
+  keepCopyBoundPaints(graph, instance, updates)
+  applySyncedStrokeLines(instance, updates, own.kept)
   const slotContent = detachOwnedSlotContent(graph, instance)
   graph.updateNode(instanceId, updates)
   followComponentLayers(graph, instance, component, parkedContent(slotContent))
@@ -245,12 +254,57 @@ function syncInstancesOf(
 export function detachInstance(graph: SceneGraph, instanceId: string): void {
   const node = graph.nodes.get(instanceId)
   if (node?.type !== 'INSTANCE') return
+  for (const nested of outermostNestedInstances(graph, node))
+    adoptNestedOverrides(graph, node, nested)
   if (node.componentId) {
     graph.instanceIndex.get(node.componentId)?.delete(instanceId)
   }
   node.type = 'FRAME'
   node.componentId = null
   clearInstanceOverrides(node.instanceOverrides)
+}
+
+// A swap's bookkeeping belongs to the instance enclosing the swapped one, never to the swapped one.
+const OWNER_ONLY_FIELDS = new Set(['componentId', 'sourceComponentId'])
+
+function outermostNestedInstances(graph: SceneGraph, instance: SceneNode): SceneNode[] {
+  return graph
+    .getChildren(instance.id)
+    .flatMap((child) =>
+      child.type === 'INSTANCE' ? [child] : outermostNestedInstances(graph, child)
+    )
+}
+
+/**
+ * An instance a detached one holds stands on its own once that one is a frame, and so must what
+ * makes it differ from its component. Cloned in, it kept the overrides of the instance it copies,
+ * under that instance's layers; those, and the ones the detached instance recorded on its layers,
+ * now go under its own.
+ */
+function adoptNestedOverrides(graph: SceneGraph, detached: SceneNode, nested: SceneNode): void {
+  const ownLayer = new Map<string, string>()
+  walkInstanceSources(graph, nested, (source, target) => {
+    ownLayer.set(source.id, target.id)
+    return true
+  })
+  const { self, descendants: kept } = cloneInstanceOverrideState(nested.instanceOverrides)
+  const outer = cloneInstanceOverrideState(detached.instanceOverrides).descendants
+  const descendants = new Map<string, Map<string, unknown>>()
+  const claim = (layerId: string, fields: Map<string, unknown>): void => {
+    const merged = descendants.get(layerId)
+    if (!merged) descendants.set(layerId, fields)
+    else for (const [field, value] of fields) merged.set(field, value)
+  }
+  // What was recorded on its own layers is more recent than what it copied, so it is laid on top.
+  for (const [layerId, fields] of kept)
+    if (ownLayer.has(layerId)) claim(ownLayer.get(layerId) ?? layerId, fields)
+  for (const [layerId, fields] of kept) if (!ownLayer.has(layerId)) claim(layerId, fields)
+  for (const [layerId, fields] of outer) {
+    if (layerId === nested.id) {
+      for (const [field, value] of fields) if (!OWNER_ONLY_FIELDS.has(field)) self.set(field, value)
+    } else if (graph.isDescendant(layerId, nested.id)) claim(layerId, fields)
+  }
+  graph.updateNode(nested.id, { instanceOverrides: { self, descendants } })
 }
 
 export function getMainComponent(graph: SceneGraph, instanceId: string): SceneNode | undefined {
@@ -279,6 +333,16 @@ export function hasInstanceOverride(graph: SceneGraph, nodeId: string, field: st
   return hasNodeInstanceOverride(instance.instanceOverrides, instance.id, nodeId, field)
 }
 
+/**
+ * The fields `changes` overrides on an instance layer. New strokes that change only what the
+ * layer's line fields say override those fields, not the paints (`changesMoreThanStrokeLines`).
+ */
+export function instanceOverrideFields(node: SceneNode, changes: Partial<SceneNode>): string[] {
+  const fields = Object.keys(changes)
+  if (!changes.strokes || changesMoreThanStrokeLines(node, changes)) return fields
+  return fields.filter((field) => field !== 'strokes')
+}
+
 export function recordInstanceOverride(
   graph: SceneGraph,
   nodeId: string,
@@ -291,10 +355,14 @@ export function recordInstanceOverride(
     (INSTANCE_OVERRIDE_FIELDS as readonly string[]).includes(field)
   )
 
-  if (relevant.length === 0) return
+  const added = relevant.filter(
+    (field) => !hasNodeInstanceOverride(instance.instanceOverrides, instance.id, nodeId, field)
+  )
+  if (added.length === 0) return
 
-  graph.willChangeNode(instance)
-  for (const field of relevant)
-    setInstanceOverride(instance.instanceOverrides, instance.id, nodeId, field)
-  graph.updateNode(instance.id, { instanceOverrides: instance.instanceOverrides })
+  // A new state rather than an edit of the old one, so a preview that captured the old state
+  // puts it back on cancel.
+  const overrides = cloneInstanceOverrideState(instance.instanceOverrides)
+  for (const field of added) setInstanceOverride(overrides, instance.id, nodeId, field)
+  graph.updateNode(instance.id, { instanceOverrides: overrides })
 }

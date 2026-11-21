@@ -23,7 +23,7 @@ import {
   layerTextStyleChanges,
   styleRunsWithPatchOver,
   textStyleChanges
-} from '#core/text/character-style'
+} from '#core/text/character/style'
 
 /** Figma's message for a style ID the document does not hold, or one of another kind. */
 export const STYLE_NOT_FOUND = 'Cannot set style successfully: Cannot find style'
@@ -82,7 +82,7 @@ export function bindStylePaints(
   if ((kind !== 'fill' && kind !== 'stroke') || !styleId) return
   const style = findSharedStyle(graph, styleId, 'FILL')
   if (!style) return
-  setPaintBindings(graph, node, kind === 'fill' ? 'fills' : 'strokes', figmaFills(graph, style))
+  setPaintBindings(graph, node, kind === 'fill' ? 'fills' : 'strokes', figmaFills(style))
 }
 
 /**

@@ -1,6 +1,8 @@
 import { useDocumentVisibility } from '@vueuse/core'
 import { watch, type Ref } from 'vue'
 
+import { abortReason } from '@open-pencil/std/timing'
+
 /** Whether the browser shows the page; shared by every wait. */
 const documentVisibility = useDocumentVisibility()
 
@@ -26,10 +28,6 @@ export interface NextFrameOptions extends FrameWaitOptions {
 export interface NextShownFrameOptions extends FrameWaitOptions {
   /** Stops waiting, rejecting with the signal's reason, when the work it is for is cancelled. */
   signal?: AbortSignal
-}
-
-function abortReason(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new DOMException('Aborted', 'AbortError')
 }
 
 /**

@@ -1,15 +1,14 @@
-import type { Paragraph } from 'canvaskit-wasm'
-
-import type { CharacterStyleOverride, StyleRun, TextLength } from '@open-pencil/scene-graph'
+import type { Paragraph } from '@open-pencil/canvaskit'
+import type { CharacterStyleOverride, StyleRun } from '@open-pencil/scene-graph'
 import { rangeFontStyle } from '@open-pencil/scene-graph/shared-styles'
 import {
   hasParagraphSpacing,
   hasTextList,
   paragraphSpacingAt,
   paragraphStyleAt,
+  styleRunAt,
   textListItems,
   textParagraphRanges,
-  lineHeightPixels,
   lineStepPixels,
   topLevelNumberDigits,
   type TextListItem,
@@ -34,8 +33,9 @@ import {
 import type { ParagraphNode } from '#core/canvas/text/paragraph/inputs'
 import type { TextRenderer } from '#core/canvas/text/renderer'
 import { DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE } from '#core/constants'
+import { autoWidthWrapWidth } from '#core/layout/text-measurement'
 import { shownSourceIndices, shownText, textCaseSegments } from '#core/text/case'
-import { rangeCapHeight } from '#core/text/character-face'
+import { rangeCapHeight } from '#core/text/character/face'
 import { glyphAdvanceSync } from '#core/text/font/glyphs'
 import { textFontFace } from '#core/text/requirements/collect'
 import { utf8Length } from '#core/text/utf8'
@@ -52,10 +52,6 @@ const FALLBACK_DIGIT_EMS = 0.6
 /** The placeholder a first-line indent puts before the text takes one UTF-16 unit, three bytes. */
 const PLACEHOLDER_UTF8_LENGTH = 3
 
-function styleAt(runs: readonly StyleRun[], index: number): CharacterStyleOverride | undefined {
-  return runs.find((run) => index >= run.start && index < run.start + run.length)?.style
-}
-
 /** Style runs of `text[start, end)` in the slice's own indices. */
 function sliceStyleRuns(runs: readonly StyleRun[], start: number, end: number): StyleRun[] {
   const sliced: StyleRun[] = []
@@ -69,12 +65,9 @@ function sliceStyleRuns(runs: readonly StyleRun[], start: number, end: number): 
 
 /** Line heights by paragraph index, `lead` places before the text: each run's, the text's elsewhere. */
 function lineHeightRuns(node: ParagraphNode, lead: number): LineHeightRun[] {
-  // A line height of zero lays lines out as auto; a percent one under half a pixel steps them
-  // by none, as Figma does.
-  const step = (lineHeight: TextLength | null, fontSize: number) =>
-    lineHeightPixels(lineHeight, fontSize) ? lineStepPixels(lineHeight, fontSize) : null
-  // A percent line height follows the font size of the characters it spaces.
-  const own = (fontSize = node.fontSize) => step(node.lineHeight, fontSize)
+  // A percent line height follows the font size of the characters it spaces; one of zero, or a
+  // percent one under half a pixel, steps lines by none, as Figma does.
+  const own = (fontSize = node.fontSize) => lineStepPixels(node.lineHeight, fontSize)
   const runs: LineHeightRun[] = []
   const add = (start: number, end: number, lineHeight: number | null) => {
     const last = runs.at(-1)
@@ -87,7 +80,9 @@ function lineHeightRuns(node: ParagraphNode, lead: number): LineHeightRun[] {
     if (position < run.start) add(position + lead, run.start + lead, own())
     const runSize = run.style.fontSize ?? node.fontSize
     const lineHeight =
-      run.style.lineHeight !== undefined ? step(run.style.lineHeight, runSize) : own(runSize)
+      run.style.lineHeight !== undefined
+        ? lineStepPixels(run.style.lineHeight, runSize)
+        : own(runSize)
     add(run.start + lead, run.start + run.length + lead, lineHeight)
     position = run.start + run.length
   }
@@ -148,10 +143,28 @@ function needsParagraphLayout(node: ParagraphNode): boolean {
 
 function layoutForNode(layout: TextLayout, node: ParagraphNode): void {
   if (node.textAutoResize === 'WIDTH_AND_HEIGHT') {
-    layout.layout(1e6)
-    layout.layout(Math.max(node.width || 1, Math.ceil(layout.getLongestLine())))
+    layoutAutoWidth(layout, node)
   } else {
     layout.layout(resolveParagraphLayoutWidth(node))
+  }
+}
+
+function truncatesAtMaxWidth(node: ParagraphNode): boolean {
+  return node.textTruncation === 'ENDING' && autoWidthWrapWidth(node) !== undefined
+}
+
+function layoutAutoWidth(layout: TextLayout, node: ParagraphNode): void {
+  const wrapWidth = resolveParagraphLayoutWidth(node)
+  if (truncatesAtMaxWidth(node)) {
+    const measuredBoxWidth = node.width || wrapWidth
+    layout.layout(Math.min(measuredBoxWidth, wrapWidth))
+    return
+  }
+  layout.layout(wrapWidth)
+  const widestLine = Math.ceil(layout.getLongestLine())
+  const width = Math.min(wrapWidth, Math.max(node.width || 1, widestLine))
+  if (width !== wrapWidth) {
+    layout.layout(width)
   }
 }
 
@@ -166,7 +179,7 @@ interface ListStyle {
 }
 
 function listStyle(node: ParagraphNode, firstCharacter: number): ListStyle {
-  const override = styleAt(node.styleRuns, firstCharacter)
+  const override = styleRunAt(node.styleRuns, firstCharacter)?.style
   return {
     em: override?.fontSize ?? (node.fontSize || DEFAULT_FONT_SIZE),
     family: override?.fontFamily ?? (node.fontFamily || DEFAULT_FONT_FAMILY),

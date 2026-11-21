@@ -1,5 +1,4 @@
 import { pick } from 'es-toolkit'
-import { isValid, toUint8Array } from 'js-base64'
 
 import {
   SceneGraph,
@@ -11,6 +10,7 @@ import { TRANSPARENT } from '@open-pencil/scene-graph/constants'
 import { parseCSSAlignSelf, parseCSSNumber, parseCSSShadows } from '@open-pencil/scene-graph/css'
 import { blurRadiusForSigma } from '@open-pencil/scene-graph/geometry'
 import { computeImageHash } from '@open-pencil/scene-graph/images'
+import { maxOf } from '@open-pencil/std/arrays'
 
 import type { DesignDocument, DesignElement, DesignNode, DesignStyleDeclaration } from '../types'
 import {
@@ -24,27 +24,48 @@ import {
   firstStrokeColor,
   setBorderWeights,
   setNodeBox,
+  hasBorder,
   strokeWeightFromStyle
 } from './box'
 import { hasBoxStyle } from './boxes'
 import { colorToStrokeFromCSS, mergedStyle, pickStyle } from './css-values'
 import {
+  alignBlocksInFlow,
+  type FlowBlock,
+  alignBlockLines,
   applyContainerLayout,
   applyFlowSizing,
   elementDisplay,
   flowOf,
   inheritedTextStyle,
+  isInlineLevel,
+  textAlignOf,
   type FlowKind,
   type ParentFlow
 } from './flow'
+import { alignGridItems, isGrid } from './grid'
+import { isSVGArtwork, imagePicture, maskSVG } from './pictures'
 import {
   applyCapturedLines,
   capturedBox,
+  capturedLinesBox,
   capturedTextBox,
   placeTopLevelLayers,
   type CapturedBox,
   type CapturedBoxes
 } from './placement'
+import { applySVGSize, isInlineSVG } from './svg'
+import {
+  applyCollapsedBorders,
+  applyTableLayout,
+  collapsesBorders,
+  isTable,
+  isTableColumn,
+  isTableRow,
+  layOutRowSpans,
+  paintSharedBordersOnce,
+  wrapTableGrid
+} from './table'
 import {
   blockRichText,
   characterStyleFromCSS,
@@ -55,6 +76,7 @@ import {
   applyParagraphs,
   type CSSCharacterStyle
 } from './text'
+import { cssTransform, type CSSTransforms } from './transform'
 
 const DOM_CSS_PLUGIN_ID = 'open-pencil-dom-css'
 const IMAGE_SOURCE_URL_KEY = 'image-source-url'
@@ -103,17 +125,6 @@ function imageScaleModeFromObjectFit(value: string | undefined): ImageScaleMode 
   return null
 }
 
-function bytesFromDataURL(value: string | undefined): Uint8Array | null {
-  if (!value?.startsWith('data:')) return null
-  const commaIndex = value.indexOf(',')
-  if (commaIndex === -1) return null
-  const metadata = value.slice(0, commaIndex)
-  const body = value.slice(commaIndex + 1)
-  // Invalid Base64 in imported HTML drops that image instead of the whole import.
-  if (!metadata.endsWith(';base64') || !isValid(body)) return null
-  return toUint8Array(body)
-}
-
 function applyImageFill(
   graph: SceneGraph,
   node: SceneNode,
@@ -122,8 +133,9 @@ function applyImageFill(
 ): void {
   if (element.tagName.toLowerCase() !== 'img') return
   const source = element.attrs.src
-  const bytes = bytesFromDataURL(source)
-  if (!bytes) {
+  const picture = imagePicture(element)
+  // A picture nothing could draw keeps its address, which exporting the layer writes back.
+  if (picture?.kind !== 'raster') {
     if (source) {
       node.pluginData.push({
         pluginId: DOM_CSS_PLUGIN_ID,
@@ -134,6 +146,7 @@ function applyImageFill(
     return
   }
 
+  const { bytes } = picture
   const imageHash = computeImageHash(bytes)
   graph.images.set(imageHash, bytes)
   node.fills = [
@@ -163,10 +176,10 @@ function applyElementStyle(
   if (fills.length > 0) node.fills = fills
   applyImageFill(graph, node, element, style)
 
-  const strokes = colorToStrokeFromCSS(
-    firstStrokeColor(style),
-    strokeWeightFromStyle(style)?.toString()
-  )
+  // A border without a style is not drawn and takes no room.
+  const strokes = hasBorder(style)
+    ? colorToStrokeFromCSS(firstStrokeColor(style), strokeWeightFromStyle(style)?.toString())
+    : []
   if (strokes.length > 0) {
     const dashPattern = dashPatternFromCSS(style, strokes[0].weight)
     if (dashPattern.length > 0) {
@@ -175,6 +188,8 @@ function applyElementStyle(
     }
     node.strokes = strokes
     setBorderWeights(node, style, strokes[0])
+    // A CSS border takes room inside the box, as an inside stroke included in layout does.
+    node.strokesIncludedInLayout = true
   }
 
   const effects = cssShadows(pickStyle(style, 'box-shadow'))
@@ -183,7 +198,7 @@ function applyElementStyle(
   const opacity = parseCSSNumber(pickStyle(style, 'opacity'))
   if (opacity !== null) node.opacity = opacity
 
-  applyCornerRadii(node, style)
+  applyCornerRadii(node, style, element.layout?.box ?? node)
 
   const overflow = pickStyle(style, 'overflow')
   if (overflow === 'hidden' || overflow === 'clip') node.clipsContent = true
@@ -220,11 +235,13 @@ function applyTextStyle(node: SceneNode, style: DesignStyleDeclaration): void {
   const effects = cssShadows(pickStyle(style, 'text-shadow'))
   if (effects.length > 0) node.effects = effects
 
-  const textAlign = pickStyle(style, 'text-align')?.toUpperCase()
+  const textAlign = textAlignOf(style)?.toUpperCase()
   if (textAlign === 'CENTER' || textAlign === 'RIGHT' || textAlign === 'JUSTIFIED') {
     node.textAlignHorizontal = textAlign
   }
 
+  // Lays out as one line through its sizing; the line limit is for truncating it, as an
+  // export writes it back as `nowrap`.
   if (pickStyle(style, 'white-space') === 'nowrap') node.maxLines = 1
 }
 
@@ -296,11 +313,42 @@ function hasContent(element: DesignElement): boolean {
   return element.children.some((child) => child.type !== 'text' || child.text.trim().length > 0)
 }
 
+/** What building the layers records for laying them out: captured boxes and transforms. */
+interface Recorded {
+  boxes: CapturedBoxes
+  transforms: CSSTransforms
+  /**
+   * Inline SVG, and images showing SVG, by the frame built for each, for the caller to draw once
+   * laid out.
+   */
+  svgs: Map<string, DesignElement>
+  /** Cells of tables with collapsed borders, until their table draws each shared border once. */
+  collapsedCells: SceneNode[]
+}
+
 /** Remembers where the layer's element was laid out, and how many lines its text took. */
-function record(boxes: CapturedBoxes, node: SceneNode, captured: CapturedBox | undefined) {
+function record(
+  graph: SceneGraph,
+  recorded: Recorded,
+  node: SceneNode,
+  captured: CapturedBox | undefined
+) {
   if (!captured) return
-  boxes.set(node.id, captured)
-  applyCapturedLines(node, captured)
+  recorded.boxes.set(node.id, captured)
+  applyCapturedLines(graph, node, captured)
+}
+
+/** Remembers the element's box, and its transform, for the layer built for it. */
+function recordElement(
+  graph: SceneGraph,
+  recorded: Recorded,
+  node: SceneNode,
+  element: DesignElement,
+  style: DesignStyleDeclaration
+) {
+  record(graph, recorded, node, capturedBox(element))
+  const transform = cssTransform(style)
+  if (transform) recorded.transforms.set(node.id, transform)
 }
 
 function createElementNode(
@@ -308,24 +356,26 @@ function createElementNode(
   parentId: string,
   element: DesignElement,
   parentFlow: ParentFlow,
-  boxes: CapturedBoxes
+  recorded: Recorded
 ): SceneNode | null {
   const style = mergedStyle(element)
   const display = elementDisplay(element, style)
-  if (display === 'none') return null
+  if (display === 'none' || isTableColumn(display)) return null
+  if (isInlineSVG(element) || isSVGArtwork(element))
+    return createSVGFrame(graph, parentId, element, parentFlow, recorded)
   if (
     isTextLikeElement(element) &&
-    !hasBoxStyle(element, style) &&
+    !hasBoxStyle(element, style, parentFlow) &&
     element.children.every((child) => child.type === 'text')
   ) {
     const text = createTextNode(graph, parentId, textContent(element), style, display, parentFlow)
     linkText(text, element)
-    record(boxes, text, capturedBox(element))
+    recordElement(graph, recorded, text, element, style)
     return text
   }
-  if (!hasBoxStyle(element, style) && holdsRichText(element)) {
+  if (!hasBoxStyle(element, style, parentFlow) && holdsRichText(element)) {
     const text = createRichTextNode(graph, parentId, element, style, display, parentFlow)
-    record(boxes, text, capturedBox(element))
+    recordElement(graph, recorded, text, element, style)
     return text
   }
 
@@ -334,47 +384,137 @@ function createElementNode(
     clipsContent: false
   })
   applyElementStyle(graph, node, element, style)
-  record(boxes, node, capturedBox(element))
+  applyCollapsedBorders(node, element, style, display)
+  recordElement(graph, recorded, node, element, style)
   // A box without content keeps its own size, as an image does, unless it declares a layout.
   const flow = hasContent(element) || flowOf(display) === 'flex' ? flowOf(display) : null
   if (flow) {
     applyContainerLayout(node, element, style, flow)
     if (flow === 'flex') applyFlexGap(node, style)
+    applyTableLayout(node, style, display)
   }
   applyFlowSizing(graph, node, style, display, parentFlow)
 
-  createChildLayers(graph, node, element, style, flow, boxes)
+  if (display === 'table-cell' && collapsesBorders(style)) recorded.collapsedCells.push(node)
+  const ownCells = recorded.collapsedCells.length
+  const parts = createChildLayers(graph, node, element, style, flow, recorded, isGrid(display))
+  layOutTablesAndGrids(graph, node, style, display, parts, recorded, ownCells)
+  return node
+}
+
+/**
+ * What tables and grids add once their children are layers: a table draws each collapsed border
+ * once, its cells' from `cellsFrom` on, and boxes its captions; a row lays out cells that span
+ * rows; a grid aligns its items.
+ */
+function layOutTablesAndGrids(
+  graph: SceneGraph,
+  node: SceneNode,
+  style: DesignStyleDeclaration,
+  display: string,
+  parts: FlowBlock[],
+  recorded: Recorded,
+  cellsFrom: number
+): void {
+  if (isTable(display)) {
+    const cells = recorded.collapsedCells.splice(cellsFrom)
+    if (collapsesBorders(style)) paintSharedBordersOnce(cells, recorded.boxes)
+    wrapTableGrid(graph, node, parts, recorded.boxes)
+  }
+  if (isTableRow(display)) layOutRowSpans(node, parts, recorded.boxes)
+  if (isGrid(display)) alignGridItems(graph, node, parts, style, recorded.boxes)
+}
+
+/**
+ * Inline SVG as a frame with the element's box and style and none of its shapes, recorded for
+ * the caller to draw into once layout has sized it.
+ */
+function createSVGFrame(
+  graph: SceneGraph,
+  parentId: string,
+  element: DesignElement,
+  parentFlow: ParentFlow,
+  recorded: Recorded
+): SceneNode {
+  const style = mergedStyle(element)
+  const node = graph.createNode('FRAME', parentId, {
+    name: element.attrs.id || element.attrs.class || element.tagName,
+    clipsContent: false
+  })
+  applyElementStyle(graph, node, element, style)
+  // A mask's background shows through its shapes only, which the artwork paints.
+  if (maskSVG(element)) node.fills = []
+  applySVGSize(node, element, style)
+  recordElement(graph, recorded, node, element, style)
+  recorded.svgs.set(node.id, element)
+  applyFlowSizing(graph, node, style, elementDisplay(element, style), parentFlow)
   return node
 }
 
 /**
  * A box's children as layers: blocks of text in its own flow as one text, since a flex box's
- * children are items, or each child as a layer of its own.
+ * children are items, or each child as a layer of its own. Returns the layers of its child
+ * elements, with their styles.
  */
+/** How many runs of text that show something an element holds among its children. */
+function textRuns(element: DesignElement): number {
+  return element.children.filter((child) => child.type === 'text' && child.text.trim() !== '')
+    .length
+}
+
+/**
+ * The box an element's own text was laid out in. Text alone in a box takes the box its lines are
+ * in. Text among the items of a flex container or a grid is an item of its own, its lines the
+ * container's only ones, as the items around it lay out as blocks; text among other elements has
+ * no box of its own.
+ */
+function ownTextBox(element: DesignElement, holdsItems: boolean): CapturedBox | undefined {
+  if (element.children.every((child) => child.type === 'text')) return capturedTextBox(element)
+  return holdsItems && textRuns(element) === 1 ? capturedLinesBox(element) : undefined
+}
+
 function createChildLayers(
   graph: SceneGraph,
   node: SceneNode,
   element: DesignElement,
   style: DesignStyleDeclaration,
   flow: FlowKind | null,
-  boxes: CapturedBoxes
-): void {
-  if (flow !== 'flex' && holdsRichText(element)) {
-    const textStyle = inheritedTextStyle(element, style)
+  recorded: Recorded,
+  grid = false
+): FlowBlock[] {
+  // A flex container's and a grid's children are items, each a layer its container aligns.
+  if (flow !== 'flex' && !grid && holdsRichText(element)) {
+    const textStyle = inheritedTextStyle(style)
     const textDisplay = flow === 'inline' ? 'inline' : 'block'
     const text = createRichTextNode(graph, node.id, element, textStyle, textDisplay, flow ?? 'none')
-    record(boxes, text, capturedTextBox(element))
-    return
+    record(graph, recorded, text, capturedTextBox(element))
+    if (flow === 'block') alignBlockLines(graph, node, style, true)
+    return []
   }
-  // Text alone in a box takes the box its lines are in; text among elements has none of its own.
-  const textBox = element.children.every((child) => child.type === 'text')
-    ? capturedTextBox(element)
-    : undefined
+  const textBox = ownTextBox(element, flow === 'flex' || grid)
+  // Whether everything the element holds sits in its lines, which its `text-align` aligns.
+  let inlineContent = true
+  const blocks: FlowBlock[] = []
+  const parts: FlowBlock[] = []
   for (const child of element.children) {
-    const inherited = inheritedTextStyle(element, style)
-    const layer = createDesignNode(graph, node.id, child, flow ?? 'none', boxes, inherited)
-    if (layer?.type === 'TEXT') record(boxes, layer, textBox)
+    const inherited = inheritedTextStyle(style)
+    const layer = createDesignNode(graph, node.id, child, flow ?? 'none', recorded, inherited)
+    // Text the element holds directly sits in its lines; an element that became text has its own box.
+    if (layer?.type === 'TEXT' && child.type === 'text') record(graph, recorded, layer, textBox)
+    if (child.type !== 'element' || !layer) continue
+    const childStyle = mergedStyle(child)
+    parts.push({ layer, element: child, style: childStyle })
+    // An absolutely positioned box is out of the flow, in no line and no block of its own.
+    if (layer.layoutPositioning === 'ABSOLUTE') continue
+    if (isInlineLevel(elementDisplay(child, childStyle))) continue
+    inlineContent = false
+    if (layer.type === 'FRAME') blocks.push({ layer, element: child, style: childStyle })
   }
+  if (flow === 'block') {
+    alignBlocksInFlow(graph, node, blocks, style)
+    alignBlockLines(graph, node, style, inlineContent)
+  }
+  return parts
 }
 
 function createDesignNode(
@@ -382,7 +522,7 @@ function createDesignNode(
   parentId: string,
   node: DesignNode,
   parentFlow: ParentFlow,
-  boxes: CapturedBoxes,
+  recorded: Recorded,
   inheritedStyle: DesignStyleDeclaration = {}
 ): SceneNode | null {
   if (node.type === 'text') {
@@ -392,14 +532,14 @@ function createDesignNode(
     return createTextNode(graph, parentId, node.text, inheritedStyle, display, parentFlow)
   }
 
-  return createElementNode(graph, parentId, node, parentFlow, boxes)
+  return createElementNode(graph, parentId, node, parentFlow, recorded)
 }
 
 function fitPageToChildren(page: SceneNode, graph: SceneGraph): void {
   const children = graph.getChildren(page.id)
   if (children.length === 0) return
-  page.width = Math.max(...children.map((child) => child.x + child.width))
-  page.height = Math.max(...children.map((child) => child.y + child.height))
+  page.width = maxOf(children.map((child) => child.x + child.width))
+  page.height = maxOf(children.map((child) => child.y + child.height))
 }
 
 /** Layers built from a styled document, with the boxes its layout was captured at. */
@@ -407,6 +547,13 @@ export interface DesignLayers {
   graph: SceneGraph
   /** Empty unless the document's layout was recorded; see `placeLayersFromLayout`. */
   boxes: CapturedBoxes
+  /** The elements' transforms, for `applyCSSTransforms` once the layers are laid out. */
+  transforms: CSSTransforms
+  /**
+   * Inline SVG elements by the frame built for each. The frame takes the element's box and
+   * style but none of its shapes, which the caller draws into it at the size layout gives it.
+   */
+  svgs: Map<string, DesignElement>
 }
 
 /**
@@ -420,17 +567,22 @@ export function designDocumentToLayers(
 ): DesignLayers {
   const graph = new SceneGraph()
   const page = graph.getPages().find((node) => node.type === 'CANVAS') ?? graph.addPage('DesignDOM')
-  const boxes: CapturedBoxes = new Map()
+  const recorded: Recorded = {
+    boxes: new Map(),
+    transforms: new Map(),
+    svgs: new Map(),
+    collapsedCells: []
+  }
 
   page.name = options.pageName ?? 'DesignDOM'
 
   for (const child of document.children) {
-    createDesignNode(graph, page.id, child, 'none', boxes)
+    createDesignNode(graph, page.id, child, 'none', recorded)
   }
-  placeTopLevelLayers(graph, page.id, boxes)
+  placeTopLevelLayers(graph, page.id, recorded.boxes)
 
   fitPageToChildren(page, graph)
-  return { graph, boxes }
+  return { graph, ...recorded }
 }
 
 export function designDocumentToSceneGraph(
@@ -440,6 +592,8 @@ export function designDocumentToSceneGraph(
   return designDocumentToLayers(document, options).graph
 }
 
+export { elementSVG, imagePicture, type ElementSVG, type ImagePicture } from './pictures'
 export { placeLayersFromLayout, type CapturedBox, type CapturedBoxes } from './placement'
+export { applyCSSTransforms, type CSSTransform, type CSSTransforms } from './transform'
 
 export type { DesignDocumentToSceneGraphOptions as ToSceneGraphOptions }

@@ -1,5 +1,10 @@
 import type { EditorContext } from '#core/editor/types'
-import { FIT_INSETS, fitViewport, pageContentBounds } from '#core/editor/viewport'
+import {
+  FIT_INSETS,
+  fitViewport,
+  pageContentBounds,
+  withChrome
+} from '#core/editor/viewport/actions'
 import { getPageColor } from '#core/figma-api/page-backgrounds'
 import type { ViewportTransform } from '#core/geometry/types'
 
@@ -41,7 +46,7 @@ export function createPageViewportStore(ctx: EditorContext) {
     }
     const bounds = pageContentBounds(ctx.graph, pageId)
     if (!bounds) return { panX: size.width / 2, panY: size.height / 2, zoom: 1 }
-    return fitViewport(bounds, size, FIT_INSETS)
+    return fitViewport(bounds, size, withChrome(FIT_INSETS, ctx.getViewportChrome()))
   }
 
   function restorePageViewport(pageId: string) {

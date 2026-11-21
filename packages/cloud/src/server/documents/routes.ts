@@ -1,10 +1,10 @@
 import {
-  parseCommitImageUploads,
-  parseCommitUpload,
-  parseCreateDocument,
-  parseCreateUpload,
-  parseRequestImageLinks,
-  parseRequestImageUploads
+  commitImageUploadsSchema,
+  commitUploadSchema,
+  createDocumentSchema,
+  createUploadSchema,
+  requestImageLinksSchema,
+  requestImageUploadsSchema
 } from '#cloud/contract'
 import type { CloudActor } from '#cloud/server/auth'
 import type { CloudDatabase } from '#cloud/server/db'
@@ -12,6 +12,7 @@ import {
   DocumentConflictError,
   DocumentForbiddenError,
   DocumentNotFoundError,
+  DocumentPurgeFailedError,
   UploadInvalidError
 } from '#cloud/server/documents/errors'
 import type { DocumentService } from '#cloud/server/documents/service'
@@ -49,6 +50,10 @@ export function documentDomainError(context: Context, error: unknown): Response 
   }
   if (error instanceof StorageQuotaExceededError) {
     return context.json({ error: { code: 'storage_quota_exceeded' as const } }, 409)
+  }
+  // Reported where cleanup failed, so the request handler doesn't report it again.
+  if (error instanceof DocumentPurgeFailedError) {
+    return context.json({ error: { code: 'purge_failed' as const } }, 503)
   }
   if (error instanceof UploadInvalidError) {
     return context.json({ error: { code: 'invalid_upload' as const } }, 422)
@@ -111,6 +116,27 @@ export function createDocumentRoutes(
     .get('/shared-documents', async (context) =>
       context.json({ documents: await service.listShared(context.get('actor').userId) })
     )
+    .get('/trash', async (context) =>
+      context.json({ documents: await service.trash.list(context.get('actor').userId) })
+    )
+    .post('/trash/:documentId/restore', documentParams, (context) =>
+      documentResponse(context, async () => {
+        await service.trash.restore(
+          context.get('actor').userId,
+          context.req.valid('param').documentId
+        )
+        return context.body(null, 204)
+      })
+    )
+    .delete('/trash/:documentId', documentParams, (context) =>
+      documentResponse(context, async () => {
+        await service.trash.purge(
+          context.get('actor').userId,
+          context.req.valid('param').documentId
+        )
+        return context.body(null, 204)
+      })
+    )
     .get('/workspaces/:workspaceId/documents', workspaceParams, async (context) => {
       const documents = await service.list(
         context.get('actor').userId,
@@ -136,7 +162,7 @@ export function createDocumentRoutes(
     .post(
       '/workspaces/:workspaceId/documents',
       workspaceParams,
-      validatedJSON(parseCreateDocument),
+      validatedJSON(createDocumentSchema),
       async (context) => {
         try {
           const document = await service.create(
@@ -185,7 +211,7 @@ export function createDocumentRoutes(
     .post(
       '/documents/:documentId/uploads',
       documentParams,
-      validatedJSON(parseCreateUpload),
+      validatedJSON(createUploadSchema),
       (context) =>
         documentResponse(context, async () =>
           context.json(
@@ -201,7 +227,7 @@ export function createDocumentRoutes(
     .post(
       '/documents/:documentId/images/commit',
       documentParams,
-      validatedJSON(parseCommitImageUploads),
+      validatedJSON(commitImageUploadsSchema),
       (context) =>
         documentResponse(context, async () => {
           await service.commitImageUploads(
@@ -215,7 +241,7 @@ export function createDocumentRoutes(
     .post(
       '/documents/:documentId/images/links',
       documentParams,
-      validatedJSON(parseRequestImageLinks),
+      validatedJSON(requestImageLinksSchema),
       (context) =>
         documentResponse(context, async () =>
           context.json(
@@ -230,7 +256,7 @@ export function createDocumentRoutes(
     .post(
       '/documents/:documentId/images',
       documentParams,
-      validatedJSON(parseRequestImageUploads),
+      validatedJSON(requestImageUploadsSchema),
       (context) =>
         documentResponse(context, async () =>
           context.json(
@@ -246,7 +272,7 @@ export function createDocumentRoutes(
     .post(
       '/uploads/:uploadId/commit',
       uploadParams,
-      validatedJSON(parseCommitUpload),
+      validatedJSON(commitUploadSchema),
       async (context) => {
         try {
           const document = await service.commitUpload(

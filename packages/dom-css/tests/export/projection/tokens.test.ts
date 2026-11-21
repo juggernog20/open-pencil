@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { sceneNodeToDesignDocument, type DesignElement } from '#dom-css/export/index'
 
-import type { SceneGraph } from '@open-pencil/scene-graph'
+import type { SceneGraph, SceneNode } from '@open-pencil/scene-graph'
 
 import { BLUE_300, BLUE_500, card, designSystem } from '../token-fixtures'
 
@@ -32,15 +32,21 @@ describe('token references in design-to-code', () => {
     expect(attrs).not.toHaveProperty('data-theme')
   })
 
-  test('writes the colour the canvas draws for a bound paint, whatever colour the paint keeps', () => {
-    // A script binding a paint keeps the colour it gave; the canvas draws the variable's value.
+  test('writes the colour a bound paint stores, as the canvas draws it', () => {
+    // A bound paint edited since its variable last gave it a colour draws its own colour, as in
+    // Figma, so only a paint showing its variable's colour writes the token.
     const graph = designSystem()
     const page = graph.getPages()[0].id
-    const stale = card(graph, page, BLUE_300)
+    const edited = card(graph, page, BLUE_300)
     const current = card(graph, page, BLUE_500)
 
-    expect(element(graph, stale.id).inlineStyle?.['background-color']).toBe('var(--color-primary)')
-    expect(element(graph, stale.id, false).inlineStyle?.['background-color']).toBe(
+    expect(element(graph, current.id).inlineStyle?.['background-color']).toBe(
+      'var(--color-primary)'
+    )
+    expect(element(graph, edited.id).inlineStyle?.['background-color']).toBe(
+      element(graph, edited.id, false).inlineStyle?.['background-color']
+    )
+    expect(element(graph, edited.id, false).inlineStyle?.['background-color']).not.toBe(
       element(graph, current.id, false).inlineStyle?.['background-color']
     )
   })
@@ -93,10 +99,11 @@ describe('token references in design-to-code', () => {
     expect(child(projected, 1).inlineStyle?.['background-color']).toBe('#94C4FC')
   })
 
-  test('starts an exported node in the modes the editor is showing', () => {
+  test('starts an exported node in the modes its page sets', () => {
     const graph = designSystem()
-    graph.setActiveMode('theme', 'dark')
-    const frame = card(graph, graph.getPages()[0].id, BLUE_300)
+    const page = graph.getPages()[0].id
+    graph.updateNode(page, { variableModes: { theme: 'dark' } })
+    const frame = card(graph, page, BLUE_300)
 
     const projected = element(graph, frame.id)
 
@@ -156,5 +163,54 @@ describe('token references in effects', () => {
     graph.updateNode(frame.id, { boundVariables: { 'effects/0/offsetY': 'gutter' } })
 
     expect(element(graph, frame.id).inlineStyle?.['box-shadow']).toBe('0px 48px 6.88px 0px #3B82F5')
+  })
+})
+
+describe('text lengths as tokens', () => {
+  function spacedText(
+    letterSpacing: SceneNode['letterSpacing'],
+    lineHeight: SceneNode['lineHeight']
+  ) {
+    const graph = designSystem()
+    graph.addVariable({
+      id: 'wide',
+      name: 'Wide',
+      type: 'FLOAT',
+      collectionId: 'space',
+      valuesByMode: { one: 2 },
+      description: '',
+      hiddenFromPublishing: false,
+      scopes: ['LETTER_SPACING']
+    })
+    const text = graph.createNode('TEXT', graph.getPages()[0].id, {
+      text: 'Hold',
+      fontFamily: 'Inter',
+      fontSize: 16,
+      width: 200,
+      height: 40,
+      textAutoResize: 'HEIGHT',
+      letterSpacing,
+      lineHeight,
+      boundVariables: { letterSpacing: 'wide', lineHeight: 'gutter' }
+    })
+    return element(graph, text.id).inlineStyle
+  }
+
+  test('writes letter spacing and line height in pixels as the tokens they are bound to', () => {
+    const style = spacedText({ value: 2, unit: 'PIXELS' }, { value: 24, unit: 'PIXELS' })
+    const spacing = style?.['letter-spacing'] ?? ''
+    expect(spacing).toStartWith('var(--')
+    expect(style?.['line-height']).toBe('var(--spacing-gutter)')
+    // The room CSS needs for the last letter's spacing follows the token too.
+    expect(style).toMatchObject({
+      width: `calc(200px + ${spacing})`,
+      'margin-right': `calc(-1 * ${spacing})`
+    })
+  })
+
+  test('keeps a percent of the font size literal, which no length token gives', () => {
+    const style = spacedText({ value: 2, unit: 'PERCENT' }, { value: 24, unit: 'PERCENT' })
+    expect(style?.['letter-spacing']).toBe('0.02em')
+    expect(style?.['line-height']).not.toContain('var(')
   })
 })

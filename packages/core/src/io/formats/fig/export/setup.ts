@@ -1,9 +1,10 @@
-import type { CanvasKit } from 'canvaskit-wasm'
 import { deflateSync, inflateSync } from 'fflate'
 import { toUint8Array } from 'js-base64'
 
+import type { CanvasKit } from '@open-pencil/canvaskit'
 import { figArchiveMetaJSON } from '@open-pencil/fig'
 import {
+  applyVariableModes,
   buildComponentPropIndex,
   exportCanvasGuides,
   figImageEntries,
@@ -26,6 +27,7 @@ import {
 import { orderKeyBetween, siblingOrderKeys } from '@open-pencil/scene-graph/order-keys'
 import type { GUID, Rect, Size } from '@open-pencil/scene-graph/primitives'
 import { ownsSlotContent } from '@open-pencil/scene-graph/slots'
+import { appendAll } from '@open-pencil/std/arrays'
 
 import type { SkiaRenderer } from '#core/canvas'
 import { CANVAS_BG_COLOR, IS_BROWSER, IS_TAURI } from '#core/constants'
@@ -46,6 +48,7 @@ const THUMBNAIL_1X1 = toUint8Array(
 )
 
 export type KiwiNodeChange = NodeChange & Record<string, unknown>
+
 export type FigExportPage = ReturnType<SceneGraph['getPages']>[number]
 
 export interface CanvasExportEntry {
@@ -157,8 +160,8 @@ export function firstUnclaimedLocalId(graph: SceneGraph, propertyIds: readonly s
   const ids = [...propertyIds, ...savedPropertyCopyIds(graph)]
   for (const node of graph.nodes.values()) ids.push(node.source.id || node.id)
   for (const [collectionId, collection] of graph.variableCollections) {
-    ids.push(collectionId, ...collection.modes.map((mode) => mode.modeId))
-    ids.push(...collection.variableIds)
+    appendAll(ids, [collectionId, ...collection.modes.map((mode) => mode.modeId)])
+    appendAll(ids, collection.variableIds)
   }
   let last = 0
   for (const id of ids) {
@@ -409,6 +412,8 @@ export interface FigExportSetupOptions {
   recordOwners?: ReadonlyMap<string, string>
   /** Writing into an archive: the variables, collections and modes it holds keep their GUIDs. */
   archiveResourceIds?: ReadonlySet<string>
+  /** Leaves the document's comments out of its record. */
+  withoutComments?: boolean
 }
 
 /**
@@ -427,7 +432,7 @@ export async function prepareFigExport(
   const documentNc = makeDocumentNodeChange(docGuid, graph.documentColorSpace)
   const rootNode = graph.getNode(graph.rootId)
   if (rootNode) Object.assign(documentNc, rootNode.source.fig.rawNodeFields)
-  applyDocumentPluginData(documentNc, graph)
+  applyDocumentPluginData(documentNc, graph, { withoutComments: options.withoutComments })
 
   const pages = graph.getPages(true)
   const nodeIdToGuid = new Map<string, GUID>()
@@ -492,6 +497,11 @@ export async function prepareFigExport(
     nodeSourceGuidValues,
     archived !== undefined
   )
+  // Pages set modes as layers do, through the collection and mode GUIDs just assigned.
+  for (const { page, canvasNc } of canvasEntries) {
+    const node = graph.getNode(page.id)
+    if (node) applyVariableModes({ graph, varIdToGuid, modeIdToGuid }, node, canvasNc)
+  }
   const pluginDataOverrides = renamedBehaviourPluginData(graph, propertyIdToGuid)
   assignOwnLayerGuids(graph, sourceOwners, nodeIdToGuid, assignedGuidValues)
 
@@ -553,6 +563,11 @@ export interface FigFileExtrasOptions {
   renderHeadlessThumbnail?: boolean
   /** The name `meta.json` records for the file. */
   documentName?: string
+  /**
+   * Leaves the document's comments out of the file, for a server that keeps them itself, as
+   * Cloud does; the file is then never the opened archive as it was.
+   */
+  withoutComments?: boolean
 }
 
 /**

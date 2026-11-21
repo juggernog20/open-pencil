@@ -1,10 +1,12 @@
 import { compact, isEqual, omit, pick } from 'es-toolkit'
 
+import { randomHex } from '@open-pencil/std/random'
+
 import { BLACK } from './constants'
 import { copyEffects, copyFills, copyLayoutGrids } from './copy'
 import type { SceneGraph } from './graph'
 import { newStrokeGeometry } from './node-defaults'
-import { randomHex } from './random'
+import { STROKE_LINE_KEYS } from './strokes'
 import { styleRunReferences } from './text/references'
 import type {
   CharacterStyleOverride,
@@ -103,6 +105,14 @@ export function sharedStyleTypeForKind(kind: SharedStyleKind): SharedStyleType {
   return STYLE_TYPES[kind]
 }
 
+/** The document's shared style layers, by the source ID layers link them by. */
+export function sharedStyleLayers(graph: SceneGraph): Map<string, SceneNode> {
+  const styles = new Map<string, SceneNode>()
+  for (const node of graph.getAllNodes())
+    if (node.sharedStyleType !== null && node.source.id) styles.set(node.source.id, node)
+  return styles
+}
+
 export function getSharedStyles(graph: SceneGraph, kind: SharedStyleKind): SharedStyle[] {
   const type = sharedStyleTypeForKind(kind)
   const styles: SharedStyle[] = []
@@ -112,9 +122,6 @@ export function getSharedStyles(graph: SceneGraph, kind: SharedStyleKind): Share
   }
   return styles.sort((left, right) => left.name.localeCompare(right.name))
 }
-
-/** What a stroke draws along beside its paint: the layer's, not its stroke style's. */
-const STROKE_LINE_KEYS = ['weight', 'align', 'cap', 'join', 'dashPattern'] as const
 
 /**
  * Whether new strokes only change how their lines run, keeping every paint. A stroke style gives

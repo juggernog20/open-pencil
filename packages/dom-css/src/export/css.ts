@@ -1,4 +1,4 @@
-import type { Effect, Fill, Stroke, TextLength } from '@open-pencil/scene-graph'
+import type { Effect, Fill, SceneNode, Stroke, TextLength } from '@open-pencil/scene-graph'
 import { colorToCSS, colorToHex } from '@open-pencil/scene-graph/color'
 import { blurSigma } from '@open-pencil/scene-graph/geometry'
 import { gradientPoint } from '@open-pencil/scene-graph/gradient'
@@ -14,6 +14,26 @@ export function cssColor(color: Color): string {
 export function fillToCSS(fill: Fill | undefined): string | undefined {
   if (fill?.type !== 'SOLID' || !fill.visible) return undefined
   return cssColor({ ...fill.color, a: fill.opacity })
+}
+
+export type BorderSide = 'top' | 'right' | 'bottom' | 'left'
+
+/**
+ * The width of each side of the border a layer's first stroke projects as, zero without one. A
+ * border insets the box its absolutely positioned children are placed in, where a stroke does not.
+ */
+export function borderWidths(node: SceneNode): Record<BorderSide, number> {
+  if (!strokeColorToCSS(node.strokes.at(0))) return { top: 0, right: 0, bottom: 0, left: 0 }
+  if (!node.independentStrokeWeights) {
+    const weight = node.strokes[0]?.weight ?? 0
+    return { top: weight, right: weight, bottom: weight, left: weight }
+  }
+  return {
+    top: node.borderTopWeight,
+    right: node.borderRightWeight,
+    bottom: node.borderBottomWeight,
+    left: node.borderLeftWeight
+  }
 }
 
 export function strokeColorToCSS(stroke: Stroke | undefined): string | undefined {
@@ -133,6 +153,28 @@ export function lineHeightToCSS(length: TextLength): string {
 /** A letter spacing as CSS writes it: a percent of the font size in `em`. */
 export function letterSpacingToCSS(length: TextLength): string {
   return length.unit === 'PIXELS' ? `${length.value}px` : `${length.value / 100}em`
+}
+
+/**
+ * Room for the spacing CSS puts after a line's last letter. A layer fits and aligns its lines by
+ * their glyphs, without that spacing, so a spaced text's box is one spacing wider than its own
+ * width and a negative margin takes the spacing back: lines break and align as on the canvas, and
+ * the text takes the room it does there. Browsers put the spacing on a glyph's right in either
+ * direction, so the margin is on the right. `spacing` is the CSS the text's letter spacing is
+ * written as, which may refer to a token.
+ */
+export function letterSpacingRoomCSS(
+  length: TextLength,
+  spacing: string,
+  width: string | undefined
+): DesignStyleDeclaration {
+  const literal = spacing === letterSpacingToCSS(length)
+  return {
+    ...(width !== undefined && { width: `calc(${width} + ${spacing})` }),
+    'margin-right': literal
+      ? letterSpacingToCSS({ ...length, value: -length.value })
+      : `calc(-1 * ${spacing})`
+  }
 }
 
 /** A share of the layer's box as a CSS percentage. */

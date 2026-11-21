@@ -36,6 +36,7 @@ export function copyFill<T extends Fill>(f: T): T {
   if (f.gradientStops) copy.gradientStops = f.gradientStops.map(copyGradientStop)
   if (f.gradientTransform) copy.gradientTransform = { ...f.gradientTransform }
   if (f.imageTransform) copy.imageTransform = { ...f.imageTransform }
+  if (f.filters) copy.filters = { ...f.filters }
   if (f.patternSpacing) copy.patternSpacing = { ...f.patternSpacing }
   if (f.noiseSize) copy.noiseSize = { ...f.noiseSize }
   return copy
@@ -50,11 +51,18 @@ export function copyStroke(s: Stroke): Stroke {
 }
 
 export function copyEffect(e: Effect): Effect {
-  return {
-    ...e,
-    color: { ...e.color },
-    offset: { ...e.offset }
+  const copy: Effect = { ...e, color: { ...e.color }, offset: { ...e.offset } }
+  if (e.glass) copy.glass = { ...e.glass }
+  if (e.noise) copy.noise = structuredClone(e.noise)
+  if (e.texture) copy.texture = structuredClone(e.texture)
+  if (e.progressive) {
+    copy.progressive = {
+      startRadius: e.progressive.startRadius,
+      startOffset: { ...e.progressive.startOffset },
+      endOffset: { ...e.progressive.endOffset }
+    }
   }
+  return copy
 }
 
 export function copyStyleRun(r: StyleRun): StyleRun {
